@@ -1,0 +1,54 @@
+{
+  "name": "control",
+  "version": "1.0.0",
+  "description": "Control — графическая оболочка для Flowseal Zapret. Управляйте обходом DPI-блокировок без командной строки.",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "build": "electron-builder build --win --config"
+  },
+  "author": "Morphine",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^26.6.10",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.morphine.control",
+    "productName": "Control",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "**/*",
+      "!assets/*",
+      "assets/app-icon.png"
+    ],
+    "extraResources": [
+      {
+        "from": "assets",
+        "to": "assets",
+        "filter": ["**/*"]
+      }
+    ],
+    "win": {
+      "icon": "assets/app-icon.png",
+      "requestedExecutionLevel": "requireAdministrator",
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "installerIcon": "assets/app-icon.ico",
+      "uninstallerIcon": "assets/app-icon.ico",
+      "installerHeaderIcon": "assets/app-icon.ico",
+      "createDesktopShortcut": true,
+      "shortcutName": "Control",
+      "artifactName": "Control-Setup-${version}.${ext}",
+      "runAfterFinish": false
+    }
+  }
+}

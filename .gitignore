@@ -1,0 +1,27 @@
+# ── Node ──────────────────────────────────────────────
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ── Build outputs ─────────────────────────────────────
+release/
+dist/
+out/
+*.exe
+*.msi
+*.dmg
+*.AppImage
+
+# ── Electron ──────────────────────────────────────────
+*.asar
+
+# ── OS files ─────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Logs ─────────────────────────────────────────────
+*.log
+logs/
+

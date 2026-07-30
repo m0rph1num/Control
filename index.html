@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com; font-src 'self' https://cdn.jsdelivr.net https://fonts.gstatic.com; img-src 'self' data: app-asset:; script-src 'self' 'unsafe-inline';">
+  <title>Control</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Poppins:wght@500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3/dist/tabler-icons.min.css">
+  <link rel="stylesheet" href="renderer/css/app.css">
+</head>
+<body>
+  <div id="app">
+    <header id="header">
+      <div class="header-drag">
+        <div class="header-brand">
+          <i class="ti ti-shield-lock-filled"></i>
+          <span class="logo">Control</span>
+        </div>
+      </div>
+      <div class="header-controls">
+        <button class="hbtn" data-action="minimize" title="Свернуть"><i class="ti ti-minus"></i></button>
+        <button class="hbtn" data-action="maximize" title="Развернуть"><i class="ti ti-maximize"></i></button>
+        <button class="hbtn hbtn-close" data-action="close" title="Закрыть"><i class="ti ti-x"></i></button>
+      </div>
+    </header>
+
+    <div class="layout">
+      <nav id="sidebar"></nav>
+      <main id="content">
+        <div class="page active" id="page-home"></div>
+        <div class="page" id="page-settings"></div>
+        <div class="page" id="page-versions"></div>
+        <div class="page" id="page-diagnostics"></div>
+        <div class="page" id="page-preferences"></div>
+        <div class="page" id="page-about"></div>
+      </main>
+    </div>
+
+    <footer id="statusbar"></footer>
+  </div>
+
+  <div id="modal-overlay" class="modal-overlay hidden">
+    <div class="modal" id="modal"></div>
+  </div>
+
+  <script src="renderer/app.js"></script>
+  <script src="renderer/pages/home.js"></script>
+  <script src="renderer/pages/settings.js"></script>
+  <script src="renderer/pages/versions.js"></script>
+  <script src="renderer/pages/diagnostics.js"></script>
+  <script src="renderer/pages/preferences.js"></script>
+  <script src="renderer/pages/about.js"></script>
+</body>
+</html>
