@@ -45,7 +45,7 @@ function renderAbout() {
 
   const badgeRow = document.createElement("div");
   badgeRow.className = "about-hero-badges";
-  const ver = window.homeState?.appVersion || '1.0.0';
+  const ver = window.homeState?.appVersion || "1.0.0";
   badgeRow.innerHTML = `
     <span class="about-badge about-badge-accent"><i class="ti ti-code"></i> v${ver}</span>
     <span class="about-badge about-badge-surface"><i class="ti ti-shield"></i> Flowseal</span>
@@ -207,7 +207,7 @@ function aboutDiscordCard() {
   body.className = "about-discord-body";
   body.innerHTML = `
     <h4>Discord-сообщество</h4>
-    <p>Monolith — техническое сообщество, обсуждение Zapret и Control.</p>`;
+    <p>Monolith — Комьюнити для совместного времяпрепровождения</p>`;
   card.appendChild(body);
 
   const btn = document.createElement("button");
