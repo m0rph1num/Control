@@ -117,10 +117,7 @@ WinDivert — это драйвер, который перехватывает �
 
 ## 🤝 Сообщество
 
-Возникли вопросы или нашли баг? Заходите:
-
 - **Discord:** [Monolith](https://discord.gg/monolithium) — сообщество для своих
-- **GitHub:** [m0rph1num](https://github.com/m0rph1num) — сюда можно писать в issues
 
 ---
 
