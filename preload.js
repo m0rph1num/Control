@@ -59,7 +59,11 @@ contextBridge.exposeInMainWorld('api', {
     start: () => ipcRenderer.invoke('flowseal:start'),
     stop: () => ipcRenderer.invoke('flowseal:stop'),
     getStatus: () => ipcRenderer.invoke('flowseal:status'),
-    onStatusChange: (cb) => ipcRenderer.on('flowseal:status-changed', (_, v) => cb(v)),
+    onStatusChange: (cb) => {
+      const listener = (_, v) => cb(v);
+      ipcRenderer.on('flowseal:status-changed', listener);
+      return () => ipcRenderer.removeListener('flowseal:status-changed', listener);
+    },
 
     // Auto-start (Task Scheduler)
     getAutoStart: () => ipcRenderer.invoke('flowseal:getAutoStart'),
@@ -89,6 +93,12 @@ contextBridge.exposeInMainWorld('api', {
     installWinDivert: () => ipcRenderer.invoke('diag:installWinDivert'),
   },
 
+  // ── Backup (export / import) ──
+  backup: {
+    export: () => ipcRenderer.invoke('backup:export'),
+    import: () => ipcRenderer.invoke('backup:import'),
+  },
+
   // ── Home Page ──
   home: {
     getData: () => ipcRenderer.invoke('home:data'),
@@ -97,10 +107,15 @@ contextBridge.exposeInMainWorld('api', {
   // ── Control Directory ──
   control: {
     getSetupStatus: () => ipcRenderer.invoke('control:getSetupStatus'),
-    setDirectory: (dir) => ipcRenderer.invoke('control:setDirectory', dir),
-    checkExistingZapret: () => ipcRenderer.invoke('control:checkExistingZapret'),
     selectVersion: (folder) => ipcRenderer.invoke('control:selectVersion', folder),
     deleteVersion: (folder) => ipcRenderer.invoke('control:deleteVersion', folder),
+  },
+
+  // ── First-launch wizard ──
+  setup: {
+    runChecks: () => ipcRenderer.invoke('setup:runChecks'),
+    defaultDir: () => ipcRenderer.invoke('setup:defaultDir'),
+    apply: (opts) => ipcRenderer.invoke('setup:apply', opts),
   },
 
   // ── Updater ──
@@ -109,7 +124,11 @@ contextBridge.exposeInMainWorld('api', {
     getVersions: () => ipcRenderer.invoke('updater:versions'),
     download: (v) => ipcRenderer.invoke('updater:download', v),
     install: (v, tempFile) => ipcRenderer.invoke('updater:install', v, tempFile),
-    onProgress: (cb) => ipcRenderer.on('updater:progress', (_, v) => cb(v)),
+    onProgress: (cb) => {
+      const listener = (_, v) => cb(v);
+      ipcRenderer.on('updater:progress', listener);
+      return () => ipcRenderer.removeListener('updater:progress', listener);
+    },
     cancelDownload: () => ipcRenderer.invoke('updater:cancelDownload'),
   },
 });

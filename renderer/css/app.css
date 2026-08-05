@@ -79,8 +79,6 @@ html, body {
   color: var(--text); line-height: 1;
 }
 
-.header-brand i { font-size: 24px; color: var(--accent); }
-
 .header-controls { display: flex; align-items: center; height: 100%; gap: 4px; padding-right: 4px; -webkit-app-region: no-drag; position: relative; z-index: 1000; }
 
 .hbtn {
@@ -242,34 +240,61 @@ html, body {
 
 /* ── Status Banner ──────────────────────────────────────────────────────────── */
 
+/* Status banner — redesigned premium look.
+   Layout: hero icon · body (title+desc) · status pill · action buttons. */
 .banner {
+  position: relative;
   display: flex; align-items: center; gap: 20px;
-  padding: 24px; border-radius: var(--r); border: 1px solid;
+  padding: 22px 24px; border-radius: calc(var(--r) + 4px); border: 1px solid;
 }
-.banner-icon {
-  width: 56px; height: 56px; border-radius: var(--r);
+
+/* Hero icon (left) */
+.banner-hero {
+  position: relative;
+  width: 58px; height: 58px; border-radius: 16px;
   display: flex; align-items: center; justify-content: center;
   font-size: 28px; flex-shrink: 0;
+  transition: background 200ms ease, color 200ms ease, box-shadow 200ms ease;
 }
+
 .banner-body { flex: 1; }
-.banner-body h3 { font-size: var(--fs-lg); font-weight: 600; }
-.banner-body p { font-size: var(--fs-sm); opacity: 0.8; margin-top: 2px; }
+.banner-title { font-size: var(--fs-lg); font-weight: 650; letter-spacing: -0.2px; transition: color 200ms ease; }
+.banner-desc { font-size: var(--fs-sm); opacity: 0.75; margin-top: 3px; line-height: 1.45; transition: color 200ms ease; }
+
 .banner-actions { display: flex; gap: 8px; flex-shrink: 0; }
 
-.banner.on {
-  background: var(--accent-muted); border-color: var(--accent-border); color: var(--accent);
+/* ── Active (green) state ──────────────────────────────────────────────── */
+.banner-on {
+  background: linear-gradient(135deg, var(--accent-muted) 0%, rgba(61, 220, 132, 0.05) 100%);
+  border-color: var(--accent-border);
 }
-.banner.on .banner-icon { background: rgba(61, 220, 132, 0.15); }
+.banner-on .banner-hero {
+  background: rgba(61, 220, 132, 0.16); color: var(--accent);
+  box-shadow: 0 0 22px 0 rgba(61, 220, 132, 0.25);
+}
+.banner-on .banner-title { color: var(--accent); }
 
-.banner.off {
-  background: var(--surface); border-color: var(--border); color: var(--text-secondary);
+/* Active steady-glow breathing on the whole card (subtle, not a moving ring) */
+.banner-on .banner-hero::after {
+  content: '';
+  position: absolute; inset: 0;
+  margin: auto; width: 44px; height: 44px; border-radius: 50%;
+  background: radial-gradient(circle, rgba(61, 220, 132, 0.35) 0%, transparent 70%);
+  animation: bannerGlowBreathe 2.6s ease-in-out infinite;
+  pointer-events: none;
 }
-.banner.off .banner-icon { background: var(--card); color: var(--text-tertiary); }
 
-.banner.err {
-  background: var(--red-muted); border-color: rgba(231, 76, 76, 0.2); color: var(--red);
+@keyframes bannerGlowBreathe {
+  0%, 100% { transform: scale(0.85); opacity: 0.5; }
+  50% { transform: scale(1.25); opacity: 0.9; }
 }
-.banner.err .banner-icon { background: rgba(231, 76, 76, 0.15); }
+
+/* ── Idle (neutral) state ──────────────────────────────────────────────── */
+.banner-off {
+  background: var(--surface); border-color: var(--border);
+}
+.banner-off .banner-hero { background: var(--card); color: var(--text-tertiary); }
+.banner-off .banner-title { color: var(--text); }
 
 /* ── Buttons ────────────────────────────────────────────────────────────────── */
 
@@ -340,7 +365,6 @@ html, body {
 .form-row:last-of-type { border-bottom: none; }
 .form-row:hover {
   background: rgba(255, 255, 255, 0.035);
-  padding-left: 8px;
 }
 
 @keyframes formRowIn {
@@ -358,6 +382,27 @@ html, body {
   flex-shrink: 0; display: flex; align-items: center; gap: 8px;
   min-height: 36px;
 }
+
+/* ── Tooltips (label hover) ─────────────────────────────────────────────────── */
+
+[data-tooltip] {
+  position: relative;
+  cursor: help;
+  text-decoration: underline dotted rgba(255, 255, 255, 0.25);
+  text-underline-offset: 3px;
+}
+[data-tooltip]::after {
+  content: attr(data-tooltip);
+  position: absolute; left: 0; bottom: calc(100% + 8px); z-index: 50;
+  max-width: 300px; width: max-content;
+  padding: 8px 12px;
+  background: #262626; border: 1px solid var(--border); border-radius: 8px;
+  color: var(--text-secondary); font-size: 12px; font-weight: 400; line-height: 1.5;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+  opacity: 0; transform: translateY(4px); pointer-events: none;
+  transition: opacity 140ms ease, transform 140ms ease;
+}
+[data-tooltip]:hover::after { opacity: 1; transform: translateY(0); }
 
 /* ── Inputs ─────────────────────────────────────────────────────────────────── */
 
@@ -446,7 +491,6 @@ select option { background: var(--card); color: var(--text); padding: 8px; }
 .vitem:last-child { border-bottom: none; }
 .vitem:hover { background: var(--surface); }
 .vitem.current { background: var(--accent-muted); border-left: 3px solid var(--accent); }
-.vitem.current:hover { border-left-width: 5px; transition: border-left-width 120ms ease; }
 
 .vinfo { flex: 1; display: flex; align-items: center; gap: 12px; }
 .vver { font-size: var(--fs-lg); font-weight: 600; min-width: 110px; }
@@ -642,10 +686,6 @@ select option { background: var(--card); color: var(--text); padding: 8px; }
   transform: translateY(-2px);
   box-shadow: 0 8px 24px rgba(0,0,0,0.10);
 }
-.about-project-accent {
-  position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
-  background: linear-gradient(180deg, var(--accent) 0%, color-mix(in srgb, var(--accent) 40%, transparent) 100%);
-}
 .about-project-inner {
   display: flex; gap: 16px; padding: 24px;
 }
@@ -796,10 +836,7 @@ select option { background: var(--card); color: var(--text); padding: 8px; }
   transform: scale(0.96);
 }
 .about-discord-btn i {
-  font-size: 16px; transition: transform 200ms ease;
-}
-.about-discord-btn:hover i {
-  transform: translateX(3px);
+  font-size: 16px;
 }
 
 /* ── Links Row (compact cards) ──────────────────────────────────────────────── */
@@ -853,7 +890,6 @@ select option { background: var(--card); color: var(--text); padding: 8px; }
   display: flex; align-items: center; justify-content: center; gap: 8px;
   font-size: var(--fs); font-weight: 700; color: var(--text-secondary); margin-bottom: 10px;
 }
-.about-footer-logo i { font-size: 18px; color: var(--accent); }
 .about-footer p { font-size: var(--fs-xs); color: var(--text-tertiary); line-height: 1.6; }
 .about-footer-copy { margin-top: 4px; font-size: 11px; opacity: 0.7; }
 .about-footer-divider {
@@ -910,22 +946,26 @@ select option { background: var(--card); color: var(--text); padding: 8px; }
 
 .home-content { display: flex; flex-direction: column; gap: 24px; }
 
-/* Banner state-transition animation */
-.banner-entry {
-  animation: bannerIn 350ms cubic-bezier(0.16, 1, 0.3, 1) both;
-}
-@keyframes bannerIn {
-  from { opacity: 0; transform: translateY(-8px) scale(0.97); }
+/* Banner state-transition animations (launch / stop). Applied only when the
+   running state actually flips, so the banner settles without jitter. */
+
+/* Idle → Active: card slides in while the hero blooms with a rising green glow. */
+.banner-go-on { animation: bannerRise 420ms cubic-bezier(0.16, 1, 0.3, 1) both; }
+.banner-go-on .banner-hero { animation: heroBloomOn 500ms cubic-bezier(0.16, 1, 0.3, 1) both; }
+@keyframes bannerRise {
+  from { opacity: 0; transform: translateY(-12px) scale(0.97); }
   to   { opacity: 1; transform: translateY(0) scale(1); }
 }
-
-/* Shield glow-pulse when active */
-.banner.on .banner-icon {
-  animation: shieldPulse 2s ease-in-out infinite;
+@keyframes heroBloomOn {
+  0%   { transform: scale(0.6); }
+  55%  { transform: scale(1.12); }
+  100% { transform: scale(1); }
 }
-@keyframes shieldPulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(61, 220, 132, 0.2); }
-  50% { box-shadow: 0 0 16px 4px rgba(61, 220, 132, 0.15); }
+
+/* Exit mask used when fading the outgoing banner out before swap. */
+.banner-exit {
+  transition: opacity 200ms ease, transform 200ms ease;
+  opacity: 0; transform: translateY(-6px) scale(0.97);
 }
 
 /* ── Progress ───────────────────────────────────────────────────────────────── */
@@ -1109,57 +1149,36 @@ select option { background: var(--card); color: var(--text); padding: 8px; }
   padding: 28px 32px 0;
 }
 
-/* Logo — animated shield */
+/* Logo — app icon (same look as the About page hero) */
 .setup-logo {
   position: relative;
-  width: 68px;
-  height: 68px;
+  width: 88px;
+  height: 88px;
   margin: 0 auto 20px;
   display: flex;
   align-items: center;
   justify-content: center;
 }
 
-.setup-logo-ring {
-  position: absolute;
-  inset: -5px;
-  border-radius: 50%;
-  border: 2px solid transparent;
-  background: conic-gradient(from 0deg, var(--accent), transparent 40%, transparent 60%, var(--accent)) border-box;
-  -webkit-mask: linear-gradient(#fff 0 0) padding-box, linear-gradient(#fff 0 0);
-  -webkit-mask-composite: xor;
-  mask-composite: exclude;
-  animation: setupRingSpin 3s linear infinite;
-  opacity: 0;
-  transition: opacity 600ms ease;
-}
-
-.setup-visible .setup-logo-ring { opacity: 1; }
-
-/* Override mask for non-webkit */
-.setup-logo-ring {
-  mask: linear-gradient(#fff 0 0) padding-box, linear-gradient(#fff 0 0);
-  mask-composite: exclude;
-}
-
-@keyframes setupRingSpin {
-  to { transform: rotate(360deg); }
-}
-
 .setup-logo-inner {
-  width: 60px;
-  height: 60px;
-  border-radius: 50%;
-  background: var(--accent-muted);
-  color: var(--accent);
+  width: 100%;
+  height: 100%;
+  border-radius: 18px;
+  background: transparent;
+  border: none;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 28px;
-  position: relative;
-  z-index: 1;
+  overflow: hidden;
   animation: setupLogoIn 500ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
   transform-origin: center;
+}
+
+.setup-logo-img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
 }
 
 @keyframes setupLogoIn {
@@ -1172,7 +1191,7 @@ select option { background: var(--card); color: var(--text); padding: 8px; }
 }
 
 @keyframes setupDonePop {
-  from { opacity: 0; transform: scale(0.5) rotate(-20deg); }
+  from { opacity: 0; transform: scale(0.5) rotate(-8deg); }
   to { opacity: 1; transform: scale(1) rotate(0deg); }
 }
 
@@ -1383,6 +1402,242 @@ select option { background: var(--card); color: var(--text); padding: 8px; }
   opacity: 1;
   transform: translateY(0);
   transition-delay: 100ms;
+}
+
+/* ── Step indicator ── */
+.setup-progress {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 20px 32px 0;
+  justify-content: center;
+}
+
+.setup-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 20px;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  font-weight: 500;
+  opacity: 0.55;
+  transition: all 300ms ease;
+}
+
+.setup-step.active {
+  opacity: 1;
+  color: var(--text);
+  background: var(--accent-muted);
+}
+
+.setup-step.done {
+  opacity: 0.85;
+  color: var(--accent);
+}
+
+.setup-step-dot {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--card);
+  border: 1px solid var(--border);
+  font-size: 14px;
+  flex-shrink: 0;
+  transition: all 300ms ease;
+}
+
+.setup-step.active .setup-step-dot {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-muted);
+}
+
+.setup-step.done .setup-step-dot {
+  border-color: var(--accent);
+  color: #111;
+  background: var(--accent);
+}
+
+.setup-step-label {
+  display: none;
+}
+
+/* ── Hero small (non-first steps) ── */
+.setup-hero-sm {
+  padding: 24px 32px 0;
+}
+
+.setup-hero-sm .setup-logo { display: none; }
+
+/* ── Environment checks ── */
+#setup-checks {
+  margin: 20px 32px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.setup-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  transition: all 250ms ease;
+}
+
+.setup-check:hover {
+  border-color: var(--hover);
+  background: var(--hover);
+}
+
+.setup-check-ico {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.setup-check-ico.ok {
+  color: var(--accent);
+  background: var(--accent-muted);
+}
+
+.setup-check-ico.warn {
+  color: var(--orange);
+  background: var(--orange-muted);
+}
+
+.setup-check-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 3px;
+}
+
+.setup-check-desc {
+  font-size: 13px;
+  color: var(--text-tertiary);
+  line-height: 1.5;
+}
+
+/* ── Options (step 3) ── */
+.setup-opts {
+  margin: 20px 32px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.setup-opt {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 250ms ease;
+}
+
+.setup-opt:hover {
+  border-color: var(--accent);
+  background: var(--hover);
+}
+
+.setup-opt-body {
+  flex: 1;
+}
+
+.setup-opt-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 3px;
+}
+
+.setup-opt-desc {
+  font-size: 13px;
+  color: var(--text-tertiary);
+  line-height: 1.5;
+}
+
+.setup-opt input[type="checkbox"] {
+  width: 20px;
+  height: 20px;
+  accent-color: var(--accent);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+/* ── Summary (step 4) ── */
+.setup-summary {
+  margin: 20px 32px 0;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.setup-sum-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+
+.setup-sum-row:last-child {
+  border-bottom: none;
+}
+
+.setup-sum-row > i {
+  font-size: 18px;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.setup-sum-label {
+  color: var(--text-tertiary);
+  flex: 1;
+}
+
+.setup-sum-value {
+  color: var(--text);
+  font-weight: 500;
+  text-align: right;
+  max-width: 55%;
+  word-break: break-all;
+}
+
+/* ── Footer with back button ── */
+.setup-footer {
+  padding: 24px 32px 32px;
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+}
+
+.setup-back {
+  min-width: 120px;
+  height: 48px;
+  font-size: 15px;
+  gap: 8px;
+  border-radius: 10px;
 }
 
 /* ── Keyframes ── */
@@ -1629,16 +1884,16 @@ select option { background: var(--card); color: var(--text); padding: 8px; }
 .strategy-card-h {
   display: flex; align-items: center; gap: 12px;
 }
-.strategy-card-h input[type="radio"] {
-  margin: 0; width: 18px; height: 18px;
-  accent-color: var(--accent); cursor: pointer;
-  transition: transform 120ms ease;
-}
-.strategy-card-h input[type="radio"]:checked {
-  transform: scale(1.08);
-}
 .strategy-card-label { font-weight: 600; font-size: 15px; display: flex; align-items: center; gap: 8px; flex: 1; }
-.strategy-card-desc { font-size: var(--fs-sm); color: var(--text-tertiary); margin: 6px 0 0 30px; }
+.strategy-card-check {
+  margin-left: auto; font-size: 18px; color: var(--accent);
+  opacity: 0; transform: scale(0.5);
+  transition: opacity 180ms ease, transform 180ms ease;
+}
+.strategy-card.selected .strategy-card-check {
+  opacity: 1; transform: scale(1);
+}
+.strategy-card-desc { font-size: var(--fs-sm); color: var(--text-tertiary); margin: 6px 0 0; }
 
 /* ═══════════════════════════════════════════════════════════════════════════════
    Preferences Page (Redesigned)
@@ -1852,3 +2107,125 @@ select option { background: var(--card); color: var(--text); padding: 8px; }
 .switch input:checked:active + .switch-slider::before {
   transform: translateX(22px) scale(0.88);
 }
+
+/* ── Guided Tour ─────────────────────────────────────────────────────────────── */
+
+.gt-root {
+  position: fixed; inset: 0;
+  z-index: 20000;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 300ms ease;
+}
+.gt-root.gt-on { opacity: 1; }
+
+/* Dark scrim with a transparent "hole" around the highlighted element.
+   The path is hit-testable only over its painted area, so clicks in the
+   hole fall through to the app while everything else is blocked. */
+.gt-scrim {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  pointer-events: none;
+}
+.gt-scrim path { pointer-events: visiblePainted; }
+
+/* Highlight ring around the target — one soft accent frame, no pulse.
+   Position/geometry update every frame from JS and must not be transitioned,
+   otherwise the highlight lags behind during scroll. */
+.gt-hole {
+  position: absolute;
+  border-radius: 12px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 200ms ease;
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--accent) 55%, transparent),
+    0 0 22px 3px color-mix(in srgb, var(--accent) 25%, transparent);
+}
+.gt-hole.gt-hole-on { opacity: 1; }
+
+/* Tooltip card */
+.gt-tip {
+  position: fixed;
+  width: 340px;
+  max-width: calc(100vw - 32px);
+  pointer-events: auto;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
+  padding: 20px;
+  opacity: 0;
+}
+.gt-tip.gt-tip-in {
+  animation: gtTipIn 280ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.gt-tip.gt-tip-off { opacity: 0 !important; pointer-events: none; }
+@keyframes gtTipIn {
+  from { opacity: 0; transform: translateY(10px) scale(0.96); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* Arrow pointing at the target — positioned by JS via --arrow-x / --arrow-y */
+.gt-tip::before {
+  content: '';
+  position: absolute;
+  width: 12px; height: 12px;
+  background: var(--card);
+  border-left: 1px solid var(--border);
+  border-top: 1px solid var(--border);
+  transform: rotate(45deg);
+}
+.gt-tip[data-side='bottom']::before { top: -7px; left: var(--arrow-x, 24px); }
+.gt-tip[data-side='top']::before { bottom: -7px; left: var(--arrow-x, 24px); transform: rotate(225deg); }
+.gt-tip[data-side='right']::before { left: -7px; top: var(--arrow-y, 24px); transform: rotate(315deg); }
+.gt-tip[data-side='center']::before { display: none; }
+
+.gt-tip-x {
+  position: absolute; top: 10px; right: 10px;
+  width: 26px; height: 26px;
+  display: flex; align-items: center; justify-content: center;
+  border: none; background: transparent; border-radius: 8px;
+  color: var(--text-tertiary); cursor: pointer;
+  font-size: 18px;
+  transition: background 150ms ease, color 150ms ease;
+}
+.gt-tip-x:hover { background: var(--hover); color: var(--text); }
+
+.gt-tip-head { display: flex; align-items: center; gap: 12px; padding-right: 24px; }
+.gt-tip-ico {
+  flex-shrink: 0;
+  width: 38px; height: 38px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
+  font-size: 20px;
+}
+.gt-tip-step {
+  font-size: 12px; font-weight: 600; letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+.gt-tip-title { font-size: 16px; font-weight: 700; color: var(--text); margin-top: 2px; }
+
+.gt-tip-text {
+  margin-top: 14px;
+  font-size: 14px; line-height: 1.65;
+  color: var(--text-secondary);
+}
+.gt-tip-text strong { color: var(--text); }
+
+.gt-tip-dots { display: flex; align-items: center; gap: 6px; margin-top: 16px; }
+.gt-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--border);
+  transition: background 200ms ease, transform 200ms ease;
+}
+.gt-dot.on { background: var(--accent); transform: scale(1.3); }
+
+.gt-tip-actions {
+  display: flex; align-items: center; gap: 8px;
+  margin-top: 18px;
+}
+.gt-tip-actions .btn-p { margin-left: auto; }

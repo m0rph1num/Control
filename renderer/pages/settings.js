@@ -12,7 +12,7 @@ function renderSettings() {
   if (typeof ZAPRET_PARAMS === 'undefined') {
     const m = document.createElement('div'); m.className = 'msg msg-warn';
     m.innerHTML = '<i class="ti ti-alert-triangle"></i><span>Параметры не загружены</span><button class="msg-copy" title="Копировать"><i class="ti ti-copy"></i></button>';
-    addMsgCopy(m);
+    ui.msgCopy(m);
     page.appendChild(m);
     return;
   }
@@ -125,19 +125,25 @@ async function renderStrategy() {
 
       const card = document.createElement('div'); card.className = 'strategy-card';
       card.style.setProperty('--i', i);
+      card.setAttribute('role', 'button');
+      card.tabIndex = 0;
       const selected = flowsealCfg.strategy === s.value;
       if (selected) card.classList.add('selected');
 
-      const header = document.createElement('div'); header.className = 'strategy-card-h';
-
-      const radio = document.createElement('input'); radio.type = 'radio';
-      radio.name = 'strategy'; radio.value = s.value; radio.checked = selected;
-      radio.addEventListener('change', () => {
+      // Select on click of the whole card (keyboard: Enter/Space)
+      const select = () => {
+        if (flowsealCfg.strategy === s.value) return;
         flowsealCfg.strategy = s.value;
         saveConfig();
         body.querySelectorAll('.strategy-card').forEach(c => c.classList.remove('selected'));
         card.classList.add('selected');
+      };
+      card.addEventListener('click', select);
+      card.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); select(); }
       });
+
+      const header = document.createElement('div'); header.className = 'strategy-card-h';
 
       const label = document.createElement('div'); label.className = 'strategy-card-label';
       label.textContent = s.label;
@@ -157,7 +163,13 @@ async function renderStrategy() {
       tag.textContent = tagText;
       label.appendChild(tag);
 
-      header.append(radio, label);
+      header.appendChild(label);
+
+      // Selection indicator — check icon appears on the right when active
+      const check = document.createElement('i');
+      check.className = 'ti ti-check strategy-card-check';
+      header.appendChild(check);
+
       card.appendChild(header);
 
       const desc = document.createElement('div'); desc.className = 'strategy-card-desc';
@@ -202,7 +214,7 @@ async function renderFilters() {
       await window.api.flowseal.setGameFilter(v);
       saveConfig();
       ui.toast('Игровой фильтр изменён. Перезапустите zapret.', 'info');
-    })));
+    }), { tooltip: 'TCP и UDP — фильтр на все игровые порты 1024-65535. TCP — только TCP-порты, UDP — только UDP. Выключен — игры не фильтруются.' }));
 
   body.appendChild(sec1);
 
@@ -219,7 +231,7 @@ async function renderFilters() {
       await window.api.flowseal.setIpsetFilter(v);
       saveConfig();
       ui.toast('IPSet фильтр изменён. Перезапустите zapret.', 'info');
-    })));
+    }), { tooltip: 'Загружен — фильтрация по списку ipset-all.txt. Отключён — без IP-фильтрации. Все IP — фильтрация без списка, на все адреса.' }));
 
   body.appendChild(sec2);
 
@@ -254,7 +266,7 @@ async function renderLists() {
   if (!lists.length) {
     const m = document.createElement('div'); m.className = 'msg msg-warn';
     m.innerHTML = '<i class="ti ti-alert-triangle"></i><span>Версия Zapret не выбрана. Перейдите на вкладку Версии и установите или активируйте версию.</span><button class="msg-copy" title="Копировать"><i class="ti ti-copy"></i></button>';
-      addMsgCopy(m);
+      ui.msgCopy(m);
     sec.appendChild(m);
   } else {
     lists.forEach(lf => {
@@ -309,20 +321,19 @@ async function renderAutostart() {
   const body = document.querySelector('.set-body');
   if (!body) return;
 
-  // ── Section 1: Автозапуск (Task Scheduler) ────────────────────────────────
-  const sec1 = secEl('Автозапуск Zapret', 'Zapret будет запускаться автоматически при входе в систему и работать в фоне — без окон и консолей.');
+  // ── Автозапуск Zapret (Windows service) ────────────────────────────────────
+  // Uses the same secEl/formRow pattern as the other tabs for visual consistency.
+  const sec = secEl('Автозапуск Zapret', 'Zapret будет запускаться автоматически при входе в Windows как служба — в фоне, без окон и консолей.');
 
   let autoStartStatus = { enabled: false };
   try { autoStartStatus = await window.api.flowseal.getAutoStart(); } catch { /* ignore */ }
 
-  const statusDesc = document.createTextNode(
-    autoStartStatus.enabled
-      ? 'Zapret будет запускаться при каждом входе в Windows'
-      : 'Автозапуск не настроен'
-  );
   const statusBadge = ui.badge(autoStartStatus.enabled ? 'Включён' : 'Отключён', autoStartStatus.enabled ? 'accent' : 'gray');
+  const statusDesc = document.createTextNode(
+    autoStartStatus.enabled ? 'Zapret запускается при старте Windows' : 'Автозапуск не настроен'
+  );
 
-  sec1.appendChild(ui.formRow('Статус', statusDesc, statusBadge));
+  sec.appendChild(ui.formRow('Статус', statusDesc, statusBadge));
 
   const autoSwitch = ui.switch(autoStartStatus.enabled, async v => {
     const r = await window.api.flowseal.setAutoStart(v);
@@ -331,7 +342,7 @@ async function renderAutostart() {
       // Update status in-place without full re-render
       statusBadge.textContent = v ? 'Включён' : 'Отключён';
       statusBadge.className = `badge badge-${v ? 'accent' : 'gray'}`;
-      statusDesc.textContent = v ? 'Zapret будет запускаться при каждом входе в Windows' : 'Автозапуск не настроен';
+      statusDesc.textContent = v ? 'Zapret запускается при старте Windows' : 'Автозапуск не настроен';
     } else {
       ui.toast('Ошибка: ' + r.error, 'err');
       // Revert switch visually
@@ -340,24 +351,13 @@ async function renderAutostart() {
     }
   });
 
-  sec1.appendChild(ui.formRow('Автозапуск',
-    'При включении создаётся задача в планировщике Windows. Zapret стартует при входе в систему.',
-    autoSwitch));
+  sec.appendChild(ui.formRow('Запускать Zapret при старте Windows',
+    'Устанавливается служба zapret. Стратегия берётся из выбранной в «Стратегиях». При смене стратегии выключите и включите автозапуск заново.',
+    autoSwitch, { tooltip: 'Zapret работает как служба Windows, в фоне, скрыто и автоматически стартует при загрузке ПК.' }));
 
-  // Info note inside the section
-  const infoNote = document.createElement('div');
-  infoNote.className = 'form-row';
-  infoNote.style.cssText = 'border-bottom:none;padding-top:4px;';
-  infoNote.innerHTML = `
-    <div style="display:flex;gap:12px;align-items:flex-start;width:100%;color:var(--text-tertiary);font-size:var(--fs-sm);line-height:1.5;padding:8px 0;">
-      <i class="ti ti-info-circle" style="font-size:16px;margin-top:2px;flex-shrink:0;"></i>
-      <span>Создаётся задача <strong>Control-Zapret</strong> в планировщике Windows. При смене стратегии выключите и включите автозапуск заново.</span>
-    </div>`;
-  sec1.appendChild(infoNote);
+  body.appendChild(sec);
 
-  body.appendChild(sec1);
-
-  // ── Section 2: Active Fakes (Payloads) ─────────────────────────────────────
+  // ── Active Fakes (Payloads) ────────────────────────────────────────────────
   const sec2 = secEl('Активные подмены (Payloads)', 'Управление .bin файлами для подмены пакетов Discord и игр.');
 
   let binsData = { fakes: [], currentDiscord: null, currentGame: null };
@@ -390,7 +390,7 @@ async function renderAutostart() {
   } else {
     const m = document.createElement('div'); m.className = 'msg msg-info';
     m.innerHTML = '<i class="ti ti-info-circle"></i><span>.bin файлы не найдены в папке bin/</span><button class="msg-copy" title="Копировать"><i class="ti ti-copy"></i></button>';
-    addMsgCopy(m);
+    ui.msgCopy(m);
     sec2.appendChild(m);
   }
 
@@ -413,15 +413,4 @@ function getStrategyFallbackDesc(value) {
     'general (SIMPLE FAKE)': 'Упрощённая стратегия: fake для всех протоколов.',
   };
   return map[value] || `Стратегия ${value}. Пробуйте если стандартные не подходят.`;
-}
-
-function addMsgCopy(el) {
-  const btn = el.querySelector('.msg-copy');
-  if (!btn) return;
-  btn.addEventListener('click', () => {
-    const text = el.querySelector('span')?.textContent || el.textContent || '';
-    navigator.clipboard.writeText(text);
-    btn.innerHTML = '<i class="ti ti-check"></i>';
-    setTimeout(() => { btn.innerHTML = '<i class="ti ti-copy"></i>'; }, 1500);
-  });
 }

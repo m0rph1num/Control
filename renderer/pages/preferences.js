@@ -12,7 +12,7 @@ async function renderPreferences() {
   if (typeof ZAPRET_PARAMS === 'undefined') {
     const m = document.createElement('div'); m.className = 'msg msg-warn';
     m.innerHTML = '<i class="ti ti-alert-triangle"></i><span>Настройки не загружены. Перезапустите приложение.</span><button class="msg-copy" title="Копировать"><i class="ti ti-copy"></i></button>';
-    addMsgCopy(m);
+    ui.msgCopy(m);
     page.appendChild(m);
     return;
   }
@@ -22,18 +22,21 @@ async function renderPreferences() {
 
   // ── Section: General ─────────────────────────────────────────────────────
   const sec1 = buildSection('Основные', 'Запуск и поведение программы', [
-    { icon: 'rocket', label: 'Автозапуск с Windows',
-      desc: 'Автоматический запуск Control при входе в систему (реестр HKCU\\Run).',
-      ctl: ui.prefSwitch(appPrefs.autoStart, v => { appPrefs.autoStart = v; savePrefs(true); }) },
-    { icon: 'minimize', label: 'Запускать свёрнутым',
-      desc: 'При автозагрузке запускаться сразу в трей, без показа окна.',
-      ctl: ui.prefSwitch(appPrefs.startMinimized, v => { appPrefs.startMinimized = v; savePrefs(true); }) },
     { icon: 'arrow-bar-to-down', label: 'Сворачивать в трей',
       desc: 'При закрытии окна сворачивать в системный трей. Клик по иконке трея — показать/скрыть.',
       ctl: ui.prefSwitch(appPrefs.minimizeToTray !== false, v => { appPrefs.minimizeToTray = v; savePrefs(true); }) },
     { icon: 'bell', label: 'Системные уведомления',
       desc: 'Показывать уведомления Windows о запуске, остановке и ошибках Zapret.',
       ctl: ui.prefSwitch(appPrefs.notifications !== false, v => { appPrefs.notifications = v; savePrefs(true); }) },
+    { icon: 'history', label: 'Восстанавливать защиту после перезагрузки',
+      desc: 'Если Zapret работал в момент закрытия Control, при следующем запуске защита включится автоматически.',
+      ctl: ui.prefSwitch(appPrefs.restoreState, v => { appPrefs.restoreState = v; savePrefs(true); }) },
+    { icon: 'shield-check', label: 'Автоперезапуск winws.exe',
+      desc: 'Если процесс обхода неожиданно упадёт, Control перезапустит его сам (до 3 попыток).',
+      ctl: ui.prefSwitch(appPrefs.watchdogEnabled !== false, v => { appPrefs.watchdogEnabled = v; savePrefs(true); }) },
+    { icon: 'power', label: 'Не останавливать защиту при выходе',
+      desc: 'Оставить winws.exe работать после полного выхода из Control (через трей).',
+      ctl: ui.prefSwitch(appPrefs.keepRunningOnExit, v => { appPrefs.keepRunningOnExit = v; savePrefs(true); }) },
   ]);
   page.appendChild(sec1);
 
@@ -77,6 +80,60 @@ async function renderPreferences() {
 
   const sec2 = buildSection('Директории', 'Пути к установленным версиям Zapret', dirRows);
   page.appendChild(sec2);
+
+  // ── Section: Backup ──────────────────────────────────────────────────────
+  const backupSec = buildSection('Резервное копирование', 'Экспорт и импорт настроек, конфигурации и пользовательских списков', []);
+  const backupRow = document.createElement('div');
+  backupRow.className = 'pref-row';
+  backupRow.style.borderBottom = 'none';
+  const backupBody = document.createElement('div');
+  backupBody.className = 'pref-row-body';
+  backupBody.innerHTML = `
+    <div class="pref-row-desc" style="margin-bottom:10px;">
+      Резервная копия содержит настройки приложения, выбранную стратегию, фильтры и пользовательские списки.
+      Файл можно переносить между компьютерами или восстановить после переустановки.
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+      <button class="btn btn-p btn-sm" id="pref-backup-export"><i class="ti ti-download"></i> Экспортировать</button>
+      <button class="btn btn-s btn-sm" id="pref-backup-import"><i class="ti ti-upload"></i> Импортировать</button>
+    </div>
+    <div style="margin-top:10px;font-size:12px;color:var(--text-tertiary);">
+      Помимо этого, Control хранит автоматическую копию настроек (settings.json.bak) для восстановления при повреждении конфигурации.
+    </div>`;
+  backupRow.appendChild(backupBody);
+  backupSec.querySelector('.pref-section-b').appendChild(backupRow);
+  page.appendChild(backupSec);
+
+  backupSec.querySelector('#pref-backup-export').addEventListener('click', async () => {
+    const btn = backupSec.querySelector('#pref-backup-export');
+    btn.disabled = true; btn.innerHTML = '<span class="spin" style="width:14px;height:14px;border-width:2px;"></span> Экспорт...';
+    const r = await window.api.backup.export();
+    btn.disabled = false; btn.innerHTML = '<i class="ti ti-download"></i> Экспортировать';
+    if (r.ok) ui.toast('Резервная копия сохранена', 'success');
+    else if (!r.canceled) ui.toast('Ошибка экспорта: ' + (r.error || 'неизвестная'), 'err');
+  });
+
+  backupSec.querySelector('#pref-backup-import').addEventListener('click', async () => {
+    const okBtn = ui.btn('Импортировать', { variant: 'p', onclick: async () => { ui.hideModal(); doImport(); } });
+    const cancelBtn = ui.btn('Отмена', { variant: 's', onclick: () => ui.hideModal() });
+    ui.modal('Импорт резервной копии', `
+      <div style="text-align:center;padding:16px 0;">
+        <i class="ti ti-alert-triangle" style="font-size:40px;color:var(--orange);margin-bottom:12px;display:block;"></i>
+        <p style="font-size:15px;color:var(--text);margin-bottom:4px;">Импорт заменит текущие настройки Control.</p>
+        <p style="font-size:13px;color:var(--text-tertiary);">Текущие настройки и списки будут перезаписаны данными из резервной копии.</p>
+      </div>`,
+      { footer: [cancelBtn, okBtn] }
+    );
+    async function doImport() {
+      const r = await window.api.backup.import();
+      if (r.ok) {
+        ui.toast('Настройки импортированы. Перезапустите Control.', 'success');
+        setTimeout(() => window.location.reload(), 1200);
+      } else if (!r.canceled) {
+        ui.toast('Ошибка импорта: ' + (r.error || 'неизвестная'), 'err');
+      }
+    }
+  });
 
   // ── Advanced (collapsible) ────────────────────────────────────────────────
   const advWrap = document.createElement('div');
@@ -185,15 +242,4 @@ async function savePrefs(silent) {
     await window.api.setSettings(appPrefs);
     if (!silent) ui.toast('Настройки сохранены', 'success');
   } catch { ui.toast('Ошибка сохранения настроек', 'err'); }
-}
-
-function addMsgCopy(el) {
-  const btn = el.querySelector('.msg-copy');
-  if (!btn) return;
-  btn.addEventListener('click', () => {
-    const text = el.querySelector('span')?.textContent || el.textContent || '';
-    navigator.clipboard.writeText(text);
-    btn.innerHTML = '<i class="ti ti-check"></i>';
-    setTimeout(() => { btn.innerHTML = '<i class="ti ti-copy"></i>'; }, 1500);
-  });
 }

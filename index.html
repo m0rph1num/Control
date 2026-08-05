@@ -3,12 +3,13 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com; font-src 'self' https://cdn.jsdelivr.net https://fonts.gstatic.com; img-src 'self' data: app-asset:; script-src 'self' 'unsafe-inline';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: app-asset:; script-src 'self' 'unsafe-inline';">
   <title>Control</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Poppins:wght@500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3/dist/tabler-icons.min.css">
+  <!-- Icons are vendored locally so the UI never breaks when offline -->
+  <link rel="stylesheet" href="renderer/css/vendor/tabler-icons.css">
   <link rel="stylesheet" href="renderer/css/app.css">
 </head>
 <body>
@@ -16,7 +17,6 @@
     <header id="header">
       <div class="header-drag">
         <div class="header-brand">
-          <i class="ti ti-shield-lock-filled"></i>
           <span class="logo">Control</span>
         </div>
       </div>

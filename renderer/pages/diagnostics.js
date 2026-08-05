@@ -51,8 +51,10 @@ async function runDiagnostics() {
     { label: 'winws.exe (обход DPI)', weight: 15 },
     { label: 'Версия Flowseal', weight: 15 },
     { label: 'Файлы стратегий', weight: 10 },
-    { label: 'Интернет', weight: 20 },
-    { label: 'DNS', weight: 15 },
+    { label: 'Интернет', weight: 10 },
+    { label: 'DNS', weight: 10 },
+    { label: 'Доступ к GitHub', weight: 10 },
+    { label: 'Целостность файлов', weight: 5 },
   ];
 
   let progress = 0;
@@ -67,16 +69,16 @@ async function runDiagnostics() {
     }
   };
 
-  try {
-    const progressInterval = setInterval(() => {
-      if (currentCheck < checks.length) {
-        progress += checks[currentCheck]?.weight || 0;
-        const bar = document.getElementById('diag-progress-bar');
-        if (bar) bar.style.width = Math.min(progress, 95) + '%';
-        updateProgress();
-      }
-    }, 400);
+  const progressInterval = setInterval(() => {
+    if (currentCheck < checks.length) {
+      progress += checks[currentCheck]?.weight || 0;
+      const bar = document.getElementById('diag-progress-bar');
+      if (bar) bar.style.width = Math.min(progress, 95) + '%';
+      updateProgress();
+    }
+  }, 400);
 
+  try {
     const results = await window.api.diag.run();
     clearInterval(progressInterval);
 
@@ -228,11 +230,14 @@ async function runDiagnostics() {
       });
     }
     ui.toast('Диагностика завершена', 'success');
-  } catch {
-    resEl.innerHTML = '<div class="msg msg-err"><i class="ti ti-alert-circle"></i><span>Ошибка выполнения диагностики</span><button class="msg-copy" title="Копировать"><i class="ti ti-copy"></i></button></div>';
+  } catch (err) {
+    clearInterval(progressInterval);
+    const errText = 'Ошибка выполнения диагностики: ' + (err?.message || String(err));
+    const esc = String(errText).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    resEl.innerHTML = `<div class="msg msg-err"><i class="ti ti-alert-circle"></i><span>${esc}</span><button class="msg-copy" title="Копировать"><i class="ti ti-copy"></i></button></div>`;
     const errEl = resEl.querySelector('.msg-err');
     errEl?.querySelector('.msg-copy')?.addEventListener('click', () => {
-      navigator.clipboard.writeText('Ошибка выполнения диагностики');
+      navigator.clipboard.writeText(errText);
     });
   }
 }

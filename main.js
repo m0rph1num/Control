@@ -12,6 +12,25 @@ const crypto = require('crypto');
 
 let mainWindow;
 let tray = null;
+let isQuitting = false;
+
+// ── Single instance lock ────────────────────────────────────────────────────────
+// Prevent multiple Control instances from fighting over winws.exe / settings.
+
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+  // Another instance already holds the lock. The first instance receives
+  // 'second-instance' and focuses its window. This instance must exit right
+  // away — app.quit() alone isn't enough because the module keeps evaluating
+  // and whenReady would still fire, briefly flashing a second window.
+  process.exit(0);
+}
+app.on('second-instance', () => {
+  if (!mainWindow) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+});
 
 // ── Admin check helper ──────────────────────────────────────────────────────────
 
@@ -89,7 +108,8 @@ function updateTrayMenu() {
       label: isRunning ? '⏹ Остановить Zapret' : '▶ Запустить Zapret',
       click: async () => {
         if (isRunning) {
-          if (currentWinwsProcess) {
+          const st = computeFlowsealStatus();
+          if (st.ours) {
             try { await stopZapret(); } catch {}
           } else {
             new Notification({ title: 'Control', body: 'Обнаружен внешний winws.exe. Остановите его вручную или через терминал.' }).show();
@@ -169,7 +189,7 @@ function getControlDir() {
 
 // ── Window ────────────────────────────────────────────────────────────────────
 
-function createWindow() {
+function createWindow(show = true) {
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
@@ -179,6 +199,7 @@ function createWindow() {
     titleBarStyle: 'hidden',
     backgroundColor: '#0c0c0f',
     icon: getAppIcon(),
+    show,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -190,8 +211,11 @@ function createWindow() {
   mainWindow.loadFile(path.join(__dirname, 'index.html'));
   if (process.argv.includes('--dev')) mainWindow.webContents.openDevTools();
 
-  // Intercept close → minimize to tray instead when setting enabled
+  // Intercept close → minimize to tray instead when setting enabled.
+  // Skip the interception during an intentional quit (tray "Выход" / OS shutdown),
+  // otherwise app.quit() gets cancelled and the app stays alive without a window.
   mainWindow.on('close', (e) => {
+    if (isQuitting) return;
     const s = loadAppSettings();
     if (s.minimizeToTray !== false) {
       e.preventDefault();
@@ -203,97 +227,272 @@ function createWindow() {
 // ── App Settings ──────────────────────────────────────────────────────────────
 
 const DEFAULT_SETTINGS = {
-  autoStart: false,
   minimizeToTray: true,
-  startMinimized: false,
   notifications: true,
   flowsealPath: '',
   controlDir: '',
   selectedVersion: '',
   selectedStrategy: 'general',
+  // ── Extended behaviour (TODO: process / state restore) ──
+  restoreState: false,        // restart Zapret on Control launch if it was running before
+  keepRunningOnExit: false,   // don't kill our winws.exe when Control exits
+  watchdogEnabled: true,      // auto-restart winws.exe if it dies unexpectedly
+  lastState: { running: false },
 };
 
+function settingsPath() {
+  return path.join(getAppDataPath(), 'settings.json');
+}
+
 function loadAppSettings() {
-  const p = path.join(getAppDataPath(), 'settings.json');
+  const p = settingsPath();
   if (!fs.existsSync(p)) return { ...DEFAULT_SETTINGS };
-  try { return { ...DEFAULT_SETTINGS, ...JSON.parse(fs.readFileSync(p, 'utf8')) }; }
-  catch { return { ...DEFAULT_SETTINGS }; }
+  try {
+    const parsed = JSON.parse(fs.readFileSync(p, 'utf8'));
+    return { ...DEFAULT_SETTINGS, ...parsed };
+  } catch {
+    // Config corrupted — try the .bak snapshot before falling back to defaults
+    const bak = p + '.bak';
+    if (fs.existsSync(bak)) {
+      try {
+        const parsed = JSON.parse(fs.readFileSync(bak, 'utf8'));
+        return { ...DEFAULT_SETTINGS, ...parsed };
+      } catch { /* bak also corrupted */ }
+    }
+    return { ...DEFAULT_SETTINGS };
+  }
 }
 
 function saveAppSettings(s) {
-  fs.writeFileSync(path.join(getAppDataPath(), 'settings.json'), JSON.stringify(s, null, 2));
+  const p = settingsPath();
+  try {
+    // Keep a snapshot of the previous good config for recovery
+    if (fs.existsSync(p)) fs.copyFileSync(p, p + '.bak');
+    fs.writeFileSync(p, JSON.stringify(s, null, 2));
+  } catch { /* ignore — next save will retry */ }
+}
+
+// Control has no "autostart with Windows" feature anymore. Remove any leftover
+// HKCU\...\Run entry from older versions so the app can't keep launching at logon.
+function removeControlAutoStart() {
+  const key = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
+  // execFileSync throws if the value doesn't exist — that's fine, ignore it
+  try { execFileSync('reg', ['delete', key, '/v', 'Control', '/f'], { timeout: 3000 }); } catch {}
 }
 
 ipcMain.handle('app:getSettings', () => loadAppSettings());
 ipcMain.handle('app:setSettings', (_, s) => {
-  saveAppSettings(s);
-  // Auto-start registry
+  if (!s || typeof s !== 'object') return { ok: false, error: 'Неверный формат настроек' };
   try {
-    const key = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
-    if (s.autoStart) {
-      const cmd = app.isPackaged
-        ? `"${process.execPath}"`
-        : `"${process.execPath}" "${app.getAppPath()}"`;
-      execSync(`reg add "${key}" /v "Control" /t REG_SZ /d "${cmd}" /f`, { timeout: 3000 });
-    } else {
-      execSync(`reg delete "${key}" /v "Control" /f 2>nul`, { timeout: 3000 });
+    // Only persist known keys — ignore anything the renderer shouldn't write
+    const sanitized = { ...DEFAULT_SETTINGS };
+    for (const key of Object.keys(DEFAULT_SETTINGS)) {
+      if (key === 'lastState') continue; // lastState is written by the main process
+      if (s[key] !== undefined) sanitized[key] = s[key];
     }
-  } catch { /* reg may fail silently */ }
-
-  return true;
+    // Merge preserved lastState
+    const prev = loadAppSettings();
+    sanitized.lastState = prev.lastState;
+    saveAppSettings(sanitized);
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
 });
 
-// ── Auto-start Zapret (Task Scheduler) ─────────────────────────────────────
+// ── Auto-start Zapret (Windows service) ────────────────────────────────────
+// Replaces the old Task-Scheduler + VBS approach with a real Windows service,
+// exactly like the original service.bat does:
+//   sc create zapret binPath= "\"C:\...\bin\winws.exe\" <final args>" start= auto
+// The strategy is read from Control's config (cfg.strategy) — no terminal menu.
+// The service runs as LocalSystem, auto-starts at boot, hidden (no windows).
 
-function escapeBatString(str) {
-  // Escape special cmd.exe characters that would break a .bat file
-  return str.replace(/&/g, '^&')
-    .replace(/\|/g, '^|')
-    .replace(/</g, '^<')
-    .replace(/>/g, '^>')
-    .replace(/!/g, '^^!');
-}
+const ZAPRET_SERVICE_NAME = 'zapret'; // matches original service.bat
 
-function createAutoStartZapretTask() {
+/** Parse the strategy .bat into full winws arguments (paths already resolved). */
+function buildZapretServiceArgs() {
   const dir = findFlowsealDir();
-  if (!dir) throw new Error('Версия Zapret не найдена');
+  if (!dir) throw new Error('Версия Zapret не найдена. Установите или активируйте версию во вкладке Версии.');
   const cfg = loadFlowsealConfig();
   const strategies = getStrategies();
   const strategy = strategies.find(s => s.value === cfg.strategy) || strategies[0];
-  if (!strategy) throw new Error('Стратегия не выбрана');
-
-  const { args, binPath } = parseStrategyArgs(strategy, dir);
-
-  // Write a helper .bat so the task always runs the right command
-  const appData = getAppDataPath();
-  if (!fs.existsSync(appData)) fs.mkdirSync(appData, { recursive: true });
-  const batPath = path.join(appData, 'autostart_zapret.bat');
-  const batContent = '@echo off\r\n"' + escapeBatString(binPath) + '" ' + escapeBatString(args) + '\r\n';
-  fs.writeFileSync(batPath, batContent);
-
-  // Remove old task first
-  try { execSync('schtasks /Delete /TN "Control-Zapret" /F 2>nul', { timeout: 3000 }); } catch {}
-
-  execSync(
-    `schtasks /Create /SC ONLOGON /TN "Control-Zapret" /TR "${batPath}" /IT /RL HIGHEST /F`,
-    { timeout: 5000 }
-  );
+  if (!strategy) throw new Error('Не найдена стратегия для автозапуска.');
+  return parseStrategyArgs(strategy, dir);
 }
 
-function removeAutoStartZapretTask() {
-  try { execSync('schtasks /Delete /TN "Control-Zapret" /F 2>nul', { timeout: 3000 }); } catch {}
-  const batPath = path.join(getAppDataPath(), 'autostart_zapret.bat');
-  try { fs.unlinkSync(batPath); } catch {}
+/** Run a .cmd via UAC elevation; resolves true when it exits with code 0. */
+function runElevatedCmd(scriptPath) {
+  return new Promise((resolve) => {
+    try {
+      execFileSync(
+        'powershell',
+        ['-NoProfile', '-Command', `Start-Process -FilePath '${scriptPath.replace(/'/g, "''")}' -Verb RunAs -Wait`],
+        { timeout: 120000 }
+      );
+      resolve(true); // no throw → elevation accepted and script exited 0
+    } catch {
+      resolve(false);
+    }
+  });
+}
+
+/** Set Control's Zapret auto-start by creating the `zapret` service. */
+async function createAutoStartZapretService() {
+  const { args, binPath } = buildZapretServiceArgs();
+  const dir = path.dirname(path.dirname(binPath)); // <dir>/bin/winws.exe → <dir>
+  if (!fs.existsSync(binPath)) throw new Error('winws.exe не найден: ' + binPath);
+
+  // Service ops (sc create/start/delete, net stop) plus the WinDivert kernel
+  // driver install need administrator rights. Control is often launched without
+  // elevation (e.g. at login without a UAC prompt), so running sc inline fails
+  // with "Access denied" (SCM event 7000). Fix: bundle the whole setup into a
+  // temp .cmd and launch it via `Start-Process -Verb RunAs -Wait` so it runs
+  // elevated regardless of how the current Control instance was started.
+
+  // ── WinDivert kernel driver (mirrors original service.bat) ───────────────
+  const binDir = path.join(dir, 'bin');
+  const sysFiles = fs.existsSync(binDir) ? fs.readdirSync(binDir).filter(f => /\.sys$/i.test(f)) : [];
+  const is64 = process.arch === 'x64' || process.env.PROCESSOR_ARCHITECTURE === 'AMD64';
+  const driverFile = sysFiles.find(f =>
+    is64 ? /win64|windivert64/i.test(f) : /win32|windivert32/i.test(f)
+  ) || sysFiles[0];
+  const sysDir = path.join(process.env.SYSTEMROOT || 'C:\\Windows', 'System32', 'drivers');
+  const targetSys = path.join(sysDir, 'WinDivert.sys');
+
+  // sc.exe wants the binPath value to embed literal quotes around the exe:
+  //   binPath= "\"C:\...\bin\winws.exe\" --wf-tcp ... "
+  const binPathArg = '"\\"' + binPath + '\\" ' + args + '"';
+
+  const regKey = 'HKLM\\System\\CurrentControlSet\\Services\\' + ZAPRET_SERVICE_NAME;
+  const strategies = getStrategies();
+  const cfg = loadFlowsealConfig();
+  const strategy = strategies.find(s => s.value === cfg.strategy) || strategies[0];
+  if (!strategy) throw new Error('Не найдена стратегия для автозапуска.');
+
+  // Build the elevated script. `net session` guards: fail fast + exit 5 if we
+  // are somehow not elevated, so the caller can show a clear message.
+  const lines = [
+    '@echo off',
+    'setlocal',
+    'net session >nul 2>&1',
+    'if errorlevel 1 ( echo NOTADMIN & exit /b 5 )',
+  ];
+  if (driverFile) {
+    const sourceDriver = path.join(binDir, driverFile);
+    lines.push(
+      `if not exist "${targetSys}" copy /y "${sourceDriver}" "${targetSys}" >nul`,
+      'sc query WinDivert >nul 2>&1 || sc create WinDivert binPath= "' + targetSys + '" type= kernel start= demand',
+      'sc start WinDivert >nul 2>&1',
+    );
+  }
+  lines.push(
+    'net stop zapret >nul 2>&1',
+    'sc delete zapret >nul 2>&1',
+    `sc create zapret binPath= ${binPathArg} DisplayName= "zapret" start= auto`,
+    'sc description zapret "Zapret DPI bypass software" >nul 2>&1',
+    `reg add "${regKey}" /v zapret-discord-youtube /t REG_SZ /d "${strategy.filename}" /f >nul`,
+    'sc start zapret',
+    'exit /b %errorlevel%',
+  );
+  const cmdText = lines.join('\r\n');
+
+  const scriptPath = path.join(getAppDataPath(), 'autostart_zapret_service.cmd');
+  fs.writeFileSync(scriptPath, cmdText, 'utf8');
+
+  let ok = false;
+  try {
+    ok = await runElevatedCmd(scriptPath);
+  } finally {
+    try { fs.unlinkSync(scriptPath); } catch {}
+  }
+  if (!ok) {
+    throw new Error('Не удалось создать службу zapret. Подтвердите запрос UAC или запустите Control от имени администратора.');
+  }
+
+  // Verify the service actually came up.
+  const st = getZapretServiceStatus();
+  if (!st.enabled) throw new Error('Служба zapret не создана.');
+  if (!st.running) {
+    throw new Error('Служба zapret создана, но не запустилась. Откройте вкладку Диагностика (WinDivert, конфликты).');
+  }
+  return { ok: true };
+}
+
+/** Remove the `zapret` service (uses elevation when needed). */
+function removeAutoStartZapretService() {
+  try {
+    // If Control is elevated, sc delete works inline.
+    execFileSync('net', ['stop', ZAPRET_SERVICE_NAME], { timeout: 3000 });
+    execFileSync('sc', ['delete', ZAPRET_SERVICE_NAME], { timeout: 3000 });
+  } catch {
+    try {
+      execFileSync(
+        'powershell',
+        ['-NoProfile', '-Command',
+          `Start-Process sc -ArgumentList 'stop,zapret' -Verb RunAs -Wait; ` +
+          `Start-Process sc -ArgumentList 'delete,zapret' -Verb RunAs -Wait`],
+        { timeout: 20000 }
+      );
+    } catch { /* ignore */ }
+  }
+  // Also clean up the legacy route (old scheduler task + VBS/bat helpers).
+  cleanLegacyAutostart();
+}
+
+function cleanLegacyAutostart() {
+  try { execFileSync('schtasks', ['/Delete', '/TN', 'Control-Zapret', '/F'], { timeout: 3000 }); } catch {}
+  const appData = getAppDataPath();
+  try { fs.unlinkSync(path.join(appData, 'autostart_zapret.vbs')); } catch {}
+  try { fs.unlinkSync(path.join(appData, 'autostart_zapret.bat')); } catch {}
+}
+
+/** Check whether the `zapret` service is installed and running. */
+function getZapretServiceStatus() {
+  try {
+    const out = execFileSync('sc', ['query', ZAPRET_SERVICE_NAME], { timeout: 3000, encoding: 'utf8' });
+    // `sc query` field names are localized (Ru: "Состояние", En: "STATE"), but the
+    // status value "RUNNING" is always English whenever the service is running, so
+    // match on that instead of the field label.
+    const running = /RUNNING/i.test(out);
+    return { enabled: true, running };
+  } catch {
+    return { enabled: false, running: false };
+  }
 }
 
 // ── Existing Zapret Detection ──────────────────────────────────────────────
 
-ipcMain.handle('control:checkExistingZapret', () => {
-  try {
-    // Check if any zapret-related processes are running (uses cached check)
-    const hasRunning = checkWinwsRunning();
+ipcMain.handle('control:getSetupStatus', () => {
+  const s = loadAppSettings();
+  return { done: !!s.controlDir, path: s.controlDir || '' };
+});
 
-    // Check common zapret installation paths outside our control dir
+// ── First-launch wizard: collect all environment checks in one call ─────────
+
+ipcMain.handle('setup:runChecks', () => {
+  const out = {
+    admin: isAdmin(),
+    winDivert: checkWinDivertInstalled(),
+    internet: false,
+    dns: false,
+    existing: { running: false, installPath: null },
+    defaultDir: null,
+  };
+
+  // Internet (fast HEAD to a reliable host; ping is unreliable on some networks)
+  try {
+    execSync('ping -n 1 8.8.8.8', { timeout: 2500 });
+    out.internet = true;
+  } catch { /* offline */ }
+
+  // DNS resolution
+  try {
+    execSync('nslookup github.com 2>nul', { timeout: 2500 });
+    out.dns = true;
+  } catch { /* dns issue */ }
+
+  // Existing zapret outside control dir + running processes
+  try {
     const s = loadAppSettings();
     const controlDir = s.controlDir || '';
     const commonPaths = [
@@ -305,34 +504,54 @@ ipcMain.handle('control:checkExistingZapret', () => {
     const existingInstall = commonPaths.find(p =>
       fs.existsSync(p) && fs.existsSync(path.join(p, 'bin', 'winws.exe')) && p !== controlDir
     );
-
-    return {
-      running: hasRunning,
+    out.existing = {
+      running: checkWinwsRunning(),
       installPath: existingInstall || null,
     };
+    // Suggest an existing install dir as default
+    out.defaultDir = existingInstall || null;
+  } catch { /* ignore */ }
+
+  return out;
+});
+
+// Default folder suggestion when nothing is installed yet
+ipcMain.handle('setup:defaultDir', () => {
+  try {
+    const s = loadAppSettings();
+    if (s.controlDir) return s.controlDir;
+    const docs = path.join(process.env.USERPROFILE || 'C:\\Users', 'Documents');
+    const candidates = [
+      path.join(docs, 'Control'),
+      path.join(process.env.USERPROFILE || 'C:\\Users', 'Control'),
+      'C:\\Control',
+    ];
+    for (const c of candidates) {
+      try { fs.mkdirSync(c, { recursive: true }); return c; } catch { /* try next */ }
+    }
+    return candidates[0];
   } catch {
-    return { running: false, installPath: null };
+    return 'C:\\Control';
   }
 });
 
-ipcMain.handle('control:getSetupStatus', () => {
-  const s = loadAppSettings();
-  return { done: !!s.controlDir, path: s.controlDir || '' };
-});
-
-ipcMain.handle('control:setDirectory', async (_, dir) => {
+// Apply all wizard choices at once (atomic-ish, best effort per key)
+ipcMain.handle('setup:apply', (_, opts) => {
   try {
-    const controlDir = ensureControlFolder(dir) || dir;
-    if (!fs.existsSync(controlDir)) {
-      try { fs.mkdirSync(controlDir, { recursive: true }); } catch {}
-    }
     const s = loadAppSettings();
-    s.controlDir = controlDir;
+    const o = (opts && typeof opts === 'object') ? opts : {};
+    if (typeof o.controlDir === 'string' && o.controlDir) {
+      const controlDir = ensureControlFolder(o.controlDir) || o.controlDir;
+      if (!fs.existsSync(controlDir)) { try { fs.mkdirSync(controlDir, { recursive: true }); } catch {} }
+      s.controlDir = controlDir;
+    }
+    if (typeof o.minimizeToTray === 'boolean') s.minimizeToTray = o.minimizeToTray;
+    if (typeof o.notifications === 'boolean') s.notifications = o.notifications;
+    if (typeof o.restoreState === 'boolean') s.restoreState = o.restoreState;
     saveAppSettings(s);
     return { ok: true };
   } catch (e) {
-    const detail = e.stderr?.toString()?.trim() || e.stdout?.toString()?.trim() || e.message;
-    return { ok: false, error: detail };
+    return { ok: false, error: e.message };
   }
 });
 
@@ -394,12 +613,22 @@ ipcMain.on('app:maximize', () => {
 });
 ipcMain.on('app:close', () => mainWindow?.close());
 ipcMain.handle('app:version', () => app.getVersion());
-ipcMain.handle('app:openExternal', (_, url) => shell.openExternal(url));
-ipcMain.handle('app:openFolder', (_, folderPath) => {
-  if (folderPath && fs.existsSync(folderPath)) {
-    shell.openPath(folderPath);
+ipcMain.handle('app:openExternal', (_, url) => {
+  // Security: only allow http(s) links — never execute local files/scripts
+  try {
+    const u = new URL(String(url || ''));
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+    shell.openExternal(u.href);
     return true;
-  }
+  } catch { return false; }
+});
+ipcMain.handle('app:openFolder', (_, folderPath) => {
+  try {
+    if (folderPath && fs.existsSync(folderPath)) {
+      shell.openPath(String(folderPath));
+      return true;
+    }
+  } catch { /* ignore */ }
   return false;
 });
 
@@ -542,6 +771,23 @@ ipcMain.handle('flowseal:getStrategies', () => {
 
 let currentWinwsProcess = null;
 let flowsealRunning = false;
+let stoppingManually = false;
+let watchdogTimer = null;
+let watchdogAttempts = 0;
+const WATCHDOG_MAX_ATTEMPTS = 3;
+
+function scheduleWatchdogRestart() {
+  const s = loadAppSettings();
+  if (s.watchdogEnabled === false) return;
+  if (watchdogAttempts >= WATCHDOG_MAX_ATTEMPTS) return;
+  watchdogAttempts++;
+  if (watchdogTimer) clearTimeout(watchdogTimer);
+  watchdogTimer = setTimeout(() => {
+    watchdogTimer = null;
+    console.log(`[watchdog] Restarting winws.exe (attempt ${watchdogAttempts}/${WATCHDOG_MAX_ATTEMPTS})`);
+    startZapret().catch(() => {});
+  }, 2000);
+}
 
 // ── Split a command-line string into argv array (handles quoted paths) ────────
 
@@ -589,25 +835,80 @@ function parseStrategyArgs(strategy, dir) {
     .replace(/"%LISTS%([^"]+)"/g, (_, p) => `"${path.join(dir, 'lists', p)}"`)
     .replace(/%BIN%([^\s&|]+)/g, (_, p) => path.join(dir, 'bin', p))
     .replace(/%LISTS%([^\s&|]+)/g, (_, p) => path.join(dir, 'lists', p))
-    .replace(/%GameFilter%/g, '12')
-    .replace(/%GameFilterTCP%/g, '12')
-    .replace(/%GameFilterUDP%/g, '12');
+    // Resolve %GameFilter%/TCP/UDP from the utils/game_filter.enabled flag file
+    // (service.bat sets these vars the same way):
+    //   disabled → TCP/UDP = 12 (placeholder, no game filtering)
+    //   all      → TCP/UDP = 1024-65535
+    //   tcp      → TCP = 1024-65535, UDP = 12
+    //   udp      → TCP = 12, UDP = 1024-65535
+    ;
+  const gameMode = getGameFilterFromDir(dir);
+  const gfTCP = gameMode === 'all' || gameMode === 'tcp' ? '1024-65535' : '12';
+  const gfUDP = gameMode === 'all' || gameMode === 'udp' ? '1024-65535' : '12';
+  fullArgs = fullArgs
+    .replace(/%GameFilter%/g, gfTCP)
+    .replace(/%GameFilterTCP%/g, gfTCP)
+    .replace(/%GameFilterUDP%/g, gfUDP);
   // Strip any remaining stray % and ^ from cmd.exe / bat artifacts
   fullArgs = fullArgs.replace(/[\^%]/g, '');
 
   return { args: fullArgs, binPath: path.join(dir, 'bin', 'winws.exe') };
 }
 
-ipcMain.handle('flowseal:status', () => {
-  // Check if any winws.exe is running (regardless of how it was started)
+/** Full paths of every running winws.exe process ([] if none or inaccessible). */
+function getRunningWinwsPaths() {
+  try {
+    const out = execFileSync('powershell', [
+      '-NoProfile', '-NonInteractive', '-Command',
+      '(Get-Process -Name winws -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Path) -join [Environment]::NewLine',
+    ], { timeout: 4000, encoding: 'utf8' });
+    return out.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Is the running winws.exe "ours"? True when Control spawned it, when the zapret
+ * Windows service (Control's own autostart) is up, or when the executable lives
+ * in a folder Control manages (the versions folder or a manual flowsealPath).
+ *
+ * The service check comes first: a service-started winws runs as LocalSystem, so
+ * its Path is often unreadable from a non-elevated context — but the running
+ * `zapret` service proves it's the autostart instance, not a third-party zapret.
+ */
+function isOurWinwsRunning() {
+  if (currentWinwsProcess && currentWinwsProcess.exitCode === null) return true;
+  try {
+    const svc = getZapretServiceStatus();
+    if (svc.enabled && svc.running) return true;
+  } catch { /* fall through to path check */ }
+  const s = loadAppSettings();
+  const roots = [];
+  if (s.controlDir) roots.push(path.resolve(s.controlDir).toLowerCase());
+  if (s.flowsealPath) roots.push(path.resolve(s.flowsealPath).toLowerCase());
+  if (!roots.length) return false;
+  const paths = getRunningWinwsPaths();
+  return paths.some(p => {
+    const lp = p.toLowerCase();
+    return roots.some(r => lp === r || lp.startsWith(r + '\\'));
+  });
+}
+
+/** Combined status: running + whether an *external* (third-party) winws is up. */
+function computeFlowsealStatus() {
   const winwsRunning = checkWinwsRunning();
-  const ourProcess = !!currentWinwsProcess;
+  const ours = isOurWinwsRunning();
   return {
     running: winwsRunning,
-    external: winwsRunning && !ourProcess,
-    ours: ourProcess,
+    external: winwsRunning && !ours,
+    ours,
     pid: currentWinwsProcess?.pid || null,
   };
+}
+
+ipcMain.handle('flowseal:status', () => {
+  return computeFlowsealStatus();
 });
 
 // ── Status cache: avoid hammering tasklist/SC every few ms ─────────────────────
@@ -621,15 +922,22 @@ function checkWinwsRunning() {
   if (_statusCache.running !== null && (now - _statusCache.ts) < STATUS_CACHE_TTL) {
     return _statusCache.running;
   }
+  // Use PowerShell instead of tasklist /FI: the /FI filter is mangled by the
+  // MSYS/bash layer (becomes "C:/Programs/Git/FI"), which made this always
+  // return false on this machine. PowerShell's Get-Process is locale-agnostic
+  // and returns a clean exit code.
+  let running = false;
   try {
-    const out = execSync('tasklist /FI "IMAGENAME eq winws.exe" /NH 2>nul', { timeout: 3000, encoding: 'utf8' });
-    const running = out.includes('winws.exe');
-    _statusCache = { running, ts: Date.now() };
-    return running;
+    const out = execFileSync('powershell', [
+      '-NoProfile', '-NonInteractive', '-Command',
+      `if (Get-Process -Name winws -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }`,
+    ], { timeout: 4000, encoding: 'utf8' });
+    running = true; // exit 0 = at least one winws process alive
   } catch {
-    _statusCache = { running: false, ts: Date.now() };
-    return false;
+    running = false; // exit 1 = none
   }
+  _statusCache = { running, ts: Date.now() };
+  return running;
 }
 
 function checkWinDivertInstalled() {
@@ -738,14 +1046,15 @@ async function startZapret() {
   if (!strategy) { console.log('[startZapret] No strategy found'); return { ok: false, error: 'Не найдена стратегия для запуска.' }; }
   console.log('[startZapret] Strategy:', strategy.value);
 
-  // Check for externally running winws.exe (started outside Control)
-  const externalRunning = checkWinwsRunning() && !currentWinwsProcess;
-  if (externalRunning) {
+  // Check for externally running winws.exe (started outside Control / our folders)
+  if (computeFlowsealStatus().external) {
     console.log('[startZapret] External winws.exe detected, will replace it');
   }
 
   console.log('[startZapret] Killing existing winws.exe...');
-  try { execSync('taskkill /IM winws.exe /F 2>nul', { timeout: 3000 }); } catch {}
+  stoppingManually = false;
+  watchdogAttempts = 0;
+  try { execSync('taskkill /IM winws.exe /F /T 2>nul', { timeout: 3000 }); } catch {}
   await sleep(500);
 
   try {
@@ -784,10 +1093,20 @@ async function startZapret() {
           ? 'winws завершился с кодом 0 (успех) — возможно, он требует интерактивного терминала'
           : 'winws завершился с кодом ' + code + (stderr ? '. stderr: ' + stderr : '');
       }
+      const wasRunning = flowsealRunning;
       flowsealRunning = false; currentWinwsProcess = null;
-      const stillRunning = checkWinwsRunning();
-      mainWindow?.webContents.send('flowseal:status-changed', { running: stillRunning, external: stillRunning });
+      bustStatusCache();
+      const st = computeFlowsealStatus();
+      mainWindow?.webContents.send('flowseal:status-changed', { running: st.running, external: st.external });
       bustStatusCache(); updateTrayMenu();
+
+      // Watchdog: if the process died unexpectedly (not via stop/restart) and
+      // it was supposed to be running, bring it back automatically.
+      if (wasRunning && !stoppingManually && code !== 0) {
+        scheduleWatchdogRestart();
+      } else {
+        watchdogAttempts = 0;
+      }
     });
 
     await sleep(1500);
@@ -816,8 +1135,15 @@ async function startZapret() {
     // Double-check process is still alive after sleep
     if (currentWinwsProcess && !currentWinwsProcess.killed && currentWinwsProcess.exitCode === null) {
       flowsealRunning = true;
+      stoppingManually = false;
       bustStatusCache(); updateTrayMenu();
       mainWindow?.webContents.send('flowseal:status-changed', { running: true, external: false });
+      // Remember state for restore-after-reboot
+      try {
+        const s = loadAppSettings();
+        s.lastState = { running: true };
+        saveAppSettings(s);
+      } catch { /* ignore */ }
       return { ok: true };
     } else {
       flowsealRunning = false;
@@ -833,15 +1159,31 @@ async function startZapret() {
 }
 
 async function stopZapret() {
+  stoppingManually = true;
+  if (watchdogTimer) { clearTimeout(watchdogTimer); watchdogTimer = null; }
+  watchdogAttempts = 0;
   if (currentWinwsProcess) {
     try { currentWinwsProcess.kill(); } catch {}
     currentWinwsProcess = null;
   }
   flowsealRunning = false;
   await sleep(300);
+  // If winws was started by the zapret service (Control's own autostart) there
+  // is no spawned-process handle to kill — stop the service instead. The service
+  // stays installed, so autostart at next boot is untouched.
+  try {
+    const svc = getZapretServiceStatus();
+    if (svc.enabled && svc.running) execFileSync('net', ['stop', ZAPRET_SERVICE_NAME], { timeout: 5000 });
+  } catch { /* ignore */ }
   bustStatusCache(); updateTrayMenu();
-  const stillRunning = checkWinwsRunning();
-  mainWindow?.webContents.send('flowseal:status-changed', { running: stillRunning, external: !currentWinwsProcess && stillRunning });
+  const st = computeFlowsealStatus();
+  mainWindow?.webContents.send('flowseal:status-changed', { running: st.running, external: st.external });
+  // Remember state for restore-after-reboot
+  try {
+    const s = loadAppSettings();
+    s.lastState = { running: false };
+    saveAppSettings(s);
+  } catch { /* ignore */ }
   return { ok: true };
 }
 
@@ -851,27 +1193,19 @@ ipcMain.handle('flowseal:stop', stopZapret);
 // ── Auto-start Zapret via Task Scheduler ──────────────────────────────────
 
 ipcMain.handle('flowseal:getAutoStart', () => {
-  try {
-    const out = execSync('schtasks /Query /TN "Control-Zapret" /FO CSV /NH 2>nul', { timeout: 3000, encoding: 'utf8' });
-    return { enabled: out.includes('Control-Zapret') };
-  } catch (e) {
-    // schtasks exits non-zero when task doesn't exist — that's normal
-    const stderr = (e.stderr || '').toString().toLowerCase();
-    const isNormal = stderr.includes('cannot find') || stderr.includes('does not exist');
-    return { enabled: false, error: isNormal ? null : (e.message || 'unknown') };
-  }
+  return getZapretServiceStatus();
 });
 
-ipcMain.handle('flowseal:setAutoStart', (_, { enabled }) => {
+ipcMain.handle('flowseal:setAutoStart', async (_, { enabled }) => {
   if (enabled) {
     try {
-      createAutoStartZapretTask();
-      return { ok: true };
+      const r = await createAutoStartZapretService();
+      return r || { ok: true };
     } catch (e) {
       return { ok: false, error: e.message };
     }
   } else {
-    removeAutoStartZapretTask();
+    removeAutoStartZapretService();
     return { ok: true };
   }
 });
@@ -890,6 +1224,16 @@ function applyGameFilterConfig(mode, dir) {
   } else {
     fs.writeFileSync(flagFile, mode === 'all' ? 'all' : mode === 'tcp' ? 'tcp' : 'udp', 'utf8');
   }
+}
+
+/** Read the current game-filter mode straight from the version folder */
+function getGameFilterFromDir(dir) {
+  try {
+    const flagFile = path.join(dir, 'utils', 'game_filter.enabled');
+    if (!fs.existsSync(flagFile)) return 'disabled';
+    const val = fs.readFileSync(flagFile, 'utf8').trim().toLowerCase();
+    return val === 'all' || val === 'tcp' || val === 'udp' ? val : 'disabled';
+  } catch { return 'disabled'; }
 }
 
 ipcMain.handle('flowseal:getGameFilter', () => {
@@ -1147,7 +1491,7 @@ ipcMain.handle('home:data', () => {
 // Diagnostics
 // ═══════════════════════════════════════════════════════════════════════════════
 
-ipcMain.handle('diag:run', () => {
+ipcMain.handle('diag:run', async () => {
   const results = [];
   const dir = findFlowsealDir();
 
@@ -1228,8 +1572,10 @@ ipcMain.handle('diag:run', () => {
     if (!cfg.strategy) possibleIssues.push('Не выбрана стратегия');
     results.push({
       test: 'winws.exe (обход DPI)',
-      status: possibleIssues.length > 0 ? 'warn' : 'warn',
-      detail: 'WinDivert активен, но winws.exe не запущен. Возможные причины: ' + (possibleIssues.length > 0 ? possibleIssues.join('; ') : 'процесс не был запущен или завершился с ошибкой'),
+      status: possibleIssues.length > 0 ? 'warn' : 'ok',
+      detail: possibleIssues.length > 0
+        ? 'WinDivert активен, но winws.exe не запущен. Возможные причины: ' + possibleIssues.join('; ')
+        : 'Готов к запуску (WinDivert активен, все файлы на месте). Нажмите «Запустить».',
     });
   } else {
     results.push({ test: 'winws.exe (обход DPI)', status: 'stopped', detail: 'Остановлен (WinDivert тоже не активен)' });
@@ -1297,6 +1643,75 @@ ipcMain.handle('diag:run', () => {
     results.push({ test: 'DNS', status: 'warn', detail: 'Проблемы с DNS' });
   }
 
+  // GitHub access (release downloads must reach GitHub)
+  try {
+    const releases = await fetchGitHubReleases();
+    if (Array.isArray(releases) && releases.length > 0) {
+      results.push({
+        test: 'Доступ к GitHub',
+        status: 'ok',
+        detail: `Список версий получен (последняя: v${releases[0].version})`,
+      });
+      // Update availability check for installed version
+      const s = loadAppSettings();
+      const installedVer = s.selectedVersion || (s.controlDir ? path.basename(dir || s.controlDir) : '');
+      const latestStable = releases.find(r => r.type === 'stable');
+      if (latestStable) {
+        const curNorm = String(installedVer).replace(/^v/i, '');
+        const latNorm = latestStable.version;
+        if (curNorm && curNorm !== '—' && curNorm !== latNorm) {
+          results.push({
+            test: 'Обновление Flowseal',
+            status: 'warn',
+            detail: `Доступна новая версия: v${latNorm} (установлена: v${curNorm}). Обновитесь во вкладке «Версии».`,
+          });
+        } else {
+          results.push({
+            test: 'Обновление Flowseal',
+            status: 'ok',
+            detail: `Установлена актуальная версия: v${curNorm || '—'}`,
+          });
+        }
+      }
+    } else {
+      results.push({ test: 'Доступ к GitHub', status: 'warn', detail: 'API GitHub недоступен или список пуст. Проверьте интернет или пересоздайте соединение.' });
+    }
+  } catch {
+    results.push({ test: 'Доступ к GitHub', status: 'warn', detail: 'Не удалось получить список версий с GitHub.' });
+  }
+
+  // File integrity check of the active zapret directory
+  if (dir) {
+    const binDir = path.join(dir, 'bin');
+    const required = ['winws.exe', 'WinDivert.dll'];
+    const missingReq = required.filter(f => !fs.existsSync(path.join(binDir, f)));
+    // Strategy files live in the version root as .bat (older layouts) or in a
+    // `strategies` subfolder (newer layouts). getStrategies() already scans both,
+    // so require that we can find at least one strategy file rather than a fixed dir.
+    const requiredDirs = ['bin', 'lists'];
+    let strategiesOk = false;
+    try {
+      const dirs = fs.readdirSync(dir, { withFileTypes: true });
+      strategiesOk = dirs.some(d => /\.bat$/i.test(d.name) && !/^service/i.test(d.name))
+        || fs.existsSync(path.join(dir, 'strategies'));
+    } catch { strategiesOk = false; }
+    const missingDirs = requiredDirs.filter(d => !fs.existsSync(path.join(dir, d)));
+    if (missingReq.length === 0 && missingDirs.length === 0 && strategiesOk) {
+      results.push({ test: 'Целостность файлов', status: 'ok', detail: 'Все ключевые файлы и стратегии на месте' });
+    } else {
+      const miss = [
+        ...missingReq,
+        ...missingDirs.map(d => 'папка ' + d),
+        ...(strategiesOk ? [] : ['стратегии (файлы *.bat)']),
+      ];
+      results.push({
+        test: 'Целостность файлов',
+        status: 'fail',
+        detail: 'Отсутствуют: ' + miss.join(', ') + '. Переустановите версию во вкладке «Версии».',
+      });
+    }
+  }
+
   return results;
 });
 
@@ -1304,11 +1719,11 @@ ipcMain.handle('diag:run', () => {
 // Updater — GitHub releases fetcher & version manager
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function fetchGitHubReleases() {
+function fetchGitHubReleases(repo = 'Flowseal/zapret-discord-youtube') {
   return new Promise((resolve) => {
     const opts = {
       hostname: 'api.github.com',
-      path: '/repos/Flowseal/zapret-discord-youtube/releases?per_page=30',
+      path: `/repos/${repo}/releases?per_page=30`,
       method: 'GET',
       headers: { 'User-Agent': 'Control-App/1.0', 'Accept': 'application/vnd.github.v3+json' },
       timeout: 10000,
@@ -1321,11 +1736,14 @@ function fetchGitHubReleases() {
           const releases = JSON.parse(data);
           if (!Array.isArray(releases)) return resolve([]);
           const versions = releases.map(r => {
-            // Find the best downloadable asset: prefer .zip > .tar.gz > .7z
+            // Find the best downloadable asset:
+            //  - Flowseal/Zapret repos ship .zip/.tar.gz/.7z source archives
+            //  - Control repo ships an NSIS .exe installer
             const assets = r.assets || [];
             const asset = assets.find(a => a.name.endsWith('.zip'))
               || assets.find(a => a.name.endsWith('.tar.gz'))
               || assets.find(a => a.name.endsWith('.7z'))
+              || assets.find(a => a.name.toLowerCase().endsWith('.exe') && /(setup|install)/i.test(a.name))
               || null;
             return {
               version: r.tag_name.replace(/^v/i, ''),
@@ -1336,6 +1754,7 @@ function fetchGitHubReleases() {
               assetUrl: asset?.browser_download_url || null,
               assetName: asset?.name || null,
               assetSize: asset?.size || 0,
+              body: (r.body || '').slice(0, 4000), // changelog text (capped)
             };
           });
           resolve(versions);
@@ -1468,7 +1887,7 @@ function downloadFile(url, destPath, onProgress) {
 ipcMain.handle('updater:current', () => {
   const s = loadAppSettings();
   // Show the app version from package.json
-  const appVer = app.getVersion() || '1.0.0';
+  const appVer = app.getVersion() || '1.0.1';
   // Check installed versions in control directory
   const dir = getControlDir();
   let installedVersions = [];
@@ -1577,6 +1996,19 @@ ipcMain.handle('updater:install', async (_, version, tempFile) => {
       return { ok: false, error: 'Скачанный файл пуст. Проверьте подключение к интернету.' };
     }
 
+    // Preserve user customizations when updating/reinstalling an existing version
+    const savedUserFiles = {};
+    const oldListsDir = path.join(verDir, 'lists');
+    if (fs.existsSync(oldListsDir)) {
+      for (const lf of LIST_FILES) {
+        const fp = path.join(oldListsDir, lf.file);
+        if (fs.existsSync(fp)) {
+          try { savedUserFiles[lf.file] = fs.readFileSync(fp, 'utf8'); } catch {}
+        }
+      }
+    }
+    const savedGameFilter = getGameFilterFromDir(verDir);
+
     // Create version directory (remove existing if any)
     if (fs.existsSync(verDir)) {
       fs.rmSync(verDir, { recursive: true, force: true });
@@ -1684,6 +2116,21 @@ ipcMain.handle('updater:install', async (_, version, tempFile) => {
       try { fs.rmdirSync(subDir); } catch {}
     }
 
+    // Restore preserved customizations (user lists + game filter) — ensures
+    // an update never wipes the user's own config.
+    if (Object.keys(savedUserFiles).length > 0) {
+      const listsDir = path.join(verDir, 'lists');
+      if (!fs.existsSync(listsDir)) { try { fs.mkdirSync(listsDir, { recursive: true }); } catch {} }
+      for (const [name, content] of Object.entries(savedUserFiles)) {
+        try { fs.writeFileSync(path.join(listsDir, name), content, 'utf8'); } catch {}
+      }
+    }
+    if (savedGameFilter && savedGameFilter !== 'disabled') {
+      const utilsDir = path.join(verDir, 'utils');
+      if (!fs.existsSync(utilsDir)) { try { fs.mkdirSync(utilsDir, { recursive: true }); } catch {} }
+      try { fs.writeFileSync(path.join(utilsDir, 'game_filter.enabled'), savedGameFilter, 'utf8'); } catch {}
+    }
+
     // Verify winws.exe exists
     const hasWinws = fs.existsSync(path.join(verDir, 'bin', 'winws.exe'));
 
@@ -1708,6 +2155,82 @@ ipcMain.handle('updater:install', async (_, version, tempFile) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// Backup — export / import settings
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function buildBackupBundle() {
+  const settings = loadAppSettings();
+  const flowsealCfg = loadFlowsealConfig();
+  const dir = findFlowsealDir();
+  const userLists = {};
+  if (dir) {
+    const listsDir = path.join(dir, 'lists');
+    if (fs.existsSync(listsDir)) {
+      for (const lf of LIST_FILES) {
+        const fp = path.join(listsDir, lf.file);
+        if (fs.existsSync(fp)) { try { userLists[lf.file] = fs.readFileSync(fp, 'utf8'); } catch {} }
+      }
+    }
+  }
+  return {
+    app: 'Control',
+    formatVersion: 1,
+    exportedAt: new Date().toISOString(),
+    controlVersion: app.getVersion() || '1.0.1',
+    settings,
+    flowsealConfig: flowsealCfg,
+    userLists,
+  };
+}
+
+ipcMain.handle('backup:export', async () => {
+  try {
+    const bundle = buildBackupBundle();
+    const r = await dialog.showSaveDialog(mainWindow, {
+      title: 'Экспорт настроек Control',
+      defaultPath: path.join(app.getPath('documents'), `control-backup-${Date.now()}.json`),
+      filters: [{ name: 'JSON', extensions: ['json'] }],
+    });
+    if (r.canceled || !r.filePath) return { ok: false, canceled: true };
+    fs.writeFileSync(r.filePath, JSON.stringify(bundle, null, 2), 'utf8');
+    return { ok: true, path: r.filePath };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+});
+
+ipcMain.handle('backup:import', async () => {
+  try {
+    const r = await dialog.showOpenDialog(mainWindow, {
+      title: 'Импорт настроек Control',
+      properties: ['openFile'],
+      filters: [{ name: 'JSON', extensions: ['json'] }],
+    });
+    if (r.canceled || !r.filePaths[0]) return { ok: false, canceled: true };
+    const raw = JSON.parse(fs.readFileSync(r.filePaths[0], 'utf8'));
+    if (!raw || raw.app !== 'Control') return { ok: false, error: 'Это не файл резервной копии Control' };
+    const settings = { ...DEFAULT_SETTINGS, ...(raw.settings || {}) };
+    // lastState is owned by the main process — never overwrite from a backup
+    settings.lastState = loadAppSettings().lastState;
+    saveAppSettings(settings);
+    if (raw.flowsealConfig) {
+      saveFlowsealConfig({ ...getDefaultFlowsealConfig(), ...raw.flowsealConfig });
+    }
+    const dir = findFlowsealDir();
+    if (dir && raw.userLists && typeof raw.userLists === 'object') {
+      const listsDir = path.join(dir, 'lists');
+      if (!fs.existsSync(listsDir)) { try { fs.mkdirSync(listsDir, { recursive: true }); } catch {} }
+      for (const [name, content] of Object.entries(raw.userLists)) {
+        try { fs.writeFileSync(path.join(listsDir, name), content, 'utf8'); } catch {}
+      }
+    }
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // Helpers
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1722,20 +2245,22 @@ function sleep(ms) {
 app.setAppUserModelId('Control');
 
 // ── Admin elevation check ─────────────────────────────────────────────────────
-if (!isAdmin()) {
+if (!gotSingleInstanceLock) {
+  // Second instance — do nothing, quit already requested above.
+} else if (!isAdmin()) {
   console.log('[main] Not running as admin. Application requires administrator privileges.');
   console.log('[main] The app manifest should trigger UAC automatically.');
   // If we reach here without admin despite the manifest, try elevation once
   try {
-    var SQ = String.fromCharCode(39);
-    var Q = String.fromCharCode(34);
-    var appArgs = process.argv.slice(1).filter(function(a) { return !a.startsWith('--'); });
-    var argPart = '';
+    const SQ = String.fromCharCode(39);
+    const Q = String.fromCharCode(34);
+    const appArgs = process.argv.slice(1).filter(a => !a.startsWith('--'));
+    let argPart = '';
     if (appArgs.length > 0) {
-      var argsStr = appArgs.map(function(a) { return SQ + a.replace(/'/g, "''") + SQ; }).join(", ");
-      argPart = " -ArgumentList " + argsStr;
+      const argsStr = appArgs.map(a => SQ + a.replace(/'/g, "''") + SQ).join(', ');
+      argPart = ' -ArgumentList ' + argsStr;
     }
-    var psCmd = "powershell -Command " + Q + "Start-Process " + SQ + process.execPath.replace(/'/g, "''") + SQ + argPart + " -Verb RunAs" + Q;
+    const psCmd = 'powershell -Command ' + Q + 'Start-Process ' + SQ + process.execPath.replace(/'/g, "''") + SQ + argPart + ' -Verb RunAs' + Q;
     console.log('[main] Elevation command:', psCmd);
     execSync(psCmd, { timeout: 8000 });
     console.log('[main] Elevation OK, exiting current process');
@@ -1776,21 +2301,44 @@ app.whenReady().then(() => {
     });
   }
 
-  createWindow();
-  createTray();
+  // Control has no "autostart with Windows" feature anymore. Clear any leftover
+  // registry entry from older versions so it can't keep launching at logon.
+  try { removeControlAutoStart(); } catch { /* best effort */ }
 
-  // Handle start minimized
+  // Start hidden is only ever requested via an explicit --minimized flag.
+  // Decide BEFORE creating the window so it never flashes on screen.
   const s = loadAppSettings();
-  if (s.startMinimized) {
-    console.log('[main] Start minimized, hiding window');
-    mainWindow?.hide();
-  }
+  const startHidden = process.argv.includes('--minimized');
+  console.log('[main] Start hidden:', startHidden);
+  createWindow(!startHidden);
+  createTray();
 
   // Ensure user list files exist (strategies reference them, winws crashes if absent)
   const fsDir = findFlowsealDir();
   if (fsDir) ensureUserListFiles(fsDir);
 
+  // Restore previous state: if Control was closed while Zapret was running and
+  // the user enabled restoreState, bring the protection back automatically.
+  if (s.restoreState && s.lastState?.running && fsDir) {
+    console.log('[main] Restoring previous state — restarting Zapret');
+    setTimeout(() => { startZapret().catch(() => {}); }, 1500);
+  }
+
   console.log('[main] App initialized');
+});
+
+// ── Clean shutdown ───────────────────────────────────────────────────────────
+// Mark intentional quit so the window close handler lets the app exit instead
+// of hiding to tray, and kill our own winws.exe child so no orphaned filter
+// process is left behind (unless the user asked to keep it running).
+app.on('before-quit', () => {
+  isQuitting = true;
+  try {
+    const s = loadAppSettings();
+    if (!s.keepRunningOnExit && currentWinwsProcess) {
+      try { currentWinwsProcess.kill(); } catch {}
+    }
+  } catch { /* ignore */ }
 });
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });

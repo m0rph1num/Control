@@ -14,7 +14,7 @@ function renderAbout() {
     const p = document.createElement("div");
     p.className = "about-particle";
     p.style.cssText = `--i:${i};--x:${20 + i * 30}%;--y:${10 + (i % 2) * 30}%;--d:${3 + i * 2}s;--s:${0.6 + i * 0.2};`;
-    p.innerHTML = '<i class="ti ti-shield-lock-filled"></i>';
+    p.innerHTML = '<i class="ti ti-shield-lock"></i>';
     hero.appendChild(p);
   }
   const glow = document.createElement("div");
@@ -29,7 +29,7 @@ function renderAbout() {
     <div class="about-hero-icon-inner">
       <img src="${iconDataUrl || "app-asset://app-icon.png"}" alt="Control" class="about-hero-img"
            onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
-      <i class="ti ti-shield-lock-filled" style="display:none"></i>
+      <i class="ti ti-shield-lock" style="display:none"></i>
     </div>`;
   hero.appendChild(iconWrap);
 
@@ -45,7 +45,7 @@ function renderAbout() {
 
   const badgeRow = document.createElement("div");
   badgeRow.className = "about-hero-badges";
-  const ver = window.homeState?.appVersion || "1.0.0";
+  const ver = window.homeState?.appVersion || "1.0.1";
   badgeRow.innerHTML = `
     <span class="about-badge about-badge-accent"><i class="ti ti-code"></i> v${ver}</span>
     <span class="about-badge about-badge-surface"><i class="ti ti-shield"></i> Flowseal</span>
@@ -98,14 +98,13 @@ function renderAbout() {
   footer.className = "about-footer";
   footer.innerHTML = `
     <div class="about-footer-logo">
-      <i class="ti ti-shield-lock-filled"></i>
       <span>Control</span>
     </div>
     <p>Распространяется под лицензией MIT</p>
     <p class="about-footer-copy">Copyright © 2026 Morphine. Все права сохранены за авторами оригинального Zapret.</p>
     <div class="about-footer-divider"></div>
     <p class="about-footer-thanks">
-      <i class="ti ti-heart-filled"></i>
+      <i class="ti ti-heart"></i>
       Сделано с заботой о пользователях
     </p>`;
   page.appendChild(footer);
@@ -132,11 +131,6 @@ function aboutProjectCard() {
     </div>`;
 
   card.appendChild(inner);
-
-  // Decorative accent line
-  const accent = document.createElement("div");
-  accent.className = "about-project-accent";
-  card.appendChild(accent);
 
   return card;
 }
@@ -168,17 +162,17 @@ function aboutDevCard(name) {
   const btns = document.createElement("div");
   btns.className = "about-dev-btns";
   btns.innerHTML = `
-    <button class="about-dev-btn" data-tooltip="Discord" style="--btn-c:#5865F2">
+    <button class="about-dev-btn" id="dev-btn-discord" style="--btn-c:#5865F2">
       <i class="ti ti-brand-discord"></i>
     </button>
-    <button class="about-dev-btn" data-tooltip="GitHub" style="--btn-c:#fff">
+    <button class="about-dev-btn" id="dev-btn-github" style="--btn-c:#fff">
       <i class="ti ti-brand-github"></i>
     </button>`;
   btns
-    .querySelector('[data-tooltip="Discord"]')
+    .querySelector("#dev-btn-discord")
     .addEventListener("click", () => window.api.openExternal?.("https://discord.com/users/879420360347488266"));
   btns
-    .querySelector('[data-tooltip="GitHub"]')
+    .querySelector("#dev-btn-github")
     .addEventListener("click", () => window.api.openExternal?.("https://github.com/m0rph1num"));
   card.appendChild(btns);
 

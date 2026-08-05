@@ -39,121 +39,145 @@ async function loadHomeStats() {
   if (statsWrap) renderStats(statsWrap);
 }
 
+let _bannerState = null;     // last rendered (running|external) key — re-render dedup
+let _bannerRunning = null;   // previous running value, for the launch animation
+
 function updateHomeStatus(opts) {
   const page = document.getElementById('page-home');
   if (!page) return;
-  const banner = page.querySelector('.home-banner');
-  if (!banner) return;
+  const bannerWrap = page.querySelector('.home-banner');
+  if (!bannerWrap) return;
 
   const st = typeof window.homeState !== 'undefined' ? window.homeState : { running: false, external: false };
   const running = st.running;
   const external = st.external || false;
-  const state = running ? 'on' : 'off';
-  let title, desc;
+
+  // Dedup: only re-render when running/external actually changed. This avoids
+  // jitter from status callbacks that fire while nothing meaningfully changed.
+  const bannerKey = running + '|' + external;
+  if (!(opts && opts.force) && _bannerState === bannerKey) {
+    const statsWrap = page.querySelector('.home-stats');
+    if (statsWrap) renderStats(statsWrap);
+    return;
+  }
+  const prevRunning = _bannerRunning;
+  _bannerState = bannerKey;
+  _bannerRunning = running;
+
+  // External = a third-party winws.exe running from a folder Control does not
+  // manage. Our own zapret — including one auto-started via the zapret service —
+  // is not external, so it reads as simply active.
   if (running && external) {
     title = 'Zapret работает (внешний)';
-    desc = 'Обнаружен запущенный вне Control процесс winws.exe. Для управления через Control остановите внешний процесс и запустите через приложение.';
+    desc = 'Обнаружен запущенный вне Control процесс winws.exe из другой папки. Для управления остановите его вручную или через терминал.';
   } else if (running) {
-    title = 'Zapret работает';
-    desc = 'Обход DPI-блокировок активен. Защита работает в фоновом режиме.';
+    title = 'Защита активна';
+    desc = 'Обход DPI-блокировок работает. winws запущен (Control либо службы автозапуска).';
   } else {
-    title = 'Zapret остановлен';
+    title = 'Защита остановлена';
     desc = 'Обход DPI-блокировок неактивен. Запустите Zapret для начала работы.';
   }
 
-  const actions = [];
-  if (running) {
-    if (!external) {
-      actions.push(ui.btn('Остановить', { variant: 'd', icon: 'player-stop', onclick: stopZapret }));
-      actions.push(ui.btn('Перезапустить', { variant: 's', icon: 'refresh', onclick: restartZapret }));
-    }
-  } else {
-    actions.push(ui.btn('Запустить', { variant: 'p', icon: 'player-play', onclick: startZapret }));
-  }
+  const actions = running && !external
+    ? [ui.btn('Остановить', { variant: 'd', icon: 'player-stop', onclick: stopZapret })]
+    : running
+      ? [] // external process — Control can't manage it
+      : [ui.btn('Запустить', { variant: 'p', icon: 'player-play', onclick: startZapret })];
 
-  // Smooth transition: fade out → swap → fade in
-  const animateIn = () => {
-    banner.innerHTML = '';
-    const nb = ui.banner(state, title, desc, actions);
-    nb.classList.add('banner-entry');
-    banner.appendChild(nb);
+  const apply = () => {
+    bannerWrap.innerHTML = '';
+    const nb = buildBanner(running, title, desc, actions);
+    // Animate only the launch (off→on) transition. The off banner renders
+    // statically so it stays visible on stop instead of fading away.
+    if (prevRunning !== null && prevRunning !== running && running) {
+      nb.classList.add('banner-go-on');
+    }
+    bannerWrap.appendChild(nb);
   };
 
-  const existing = banner.querySelector('.banner');
-  if (opts && opts.instant) {
-    animateIn();
-  } else if (existing) {
-    existing.style.transition = 'opacity 150ms ease, transform 150ms ease';
-    existing.style.opacity = '0';
-    existing.style.transform = 'translateY(-4px) scale(0.97)';
-    setTimeout(animateIn, 160);
+  // Animate idle→active / active→idle transitions for polish.
+  if (opts && opts.instant || prevRunning === null) {
+    apply();
   } else {
-    animateIn();
+    const old = bannerWrap.querySelector('.banner');
+    if (old) {
+      old.classList.add('banner-exit');
+      setTimeout(apply, 220);
+    } else {
+      apply();
+    }
   }
 
-  // Re-render stats with current data
   const statsWrap = page.querySelector('.home-stats');
   if (statsWrap) renderStats(statsWrap);
 }
 
-async function startZapret() {
-  try {
-    const banner = document.querySelector('.home-banner');
-    const btns = banner ? banner.querySelectorAll('.btn') : [];
-    btns.forEach(b => { b.disabled = true; b.classList.add('loading'); });
-    // Replace icon with spinner on the primary button
-    const playBtn = banner?.querySelector('.btn-p');
-    if (playBtn) { playBtn.innerHTML = '<span class="spin" style="width:18px;height:18px;border-width:2px;"></span>'; }
+/** Build the premium status banner DOM. */
+function buildBanner(running, title, desc, actions) {
+  const b = document.createElement('div');
+  b.className = 'banner' + (running ? ' banner-on' : ' banner-off');
 
+  const hero = document.createElement('div');
+  hero.className = 'banner-hero';
+  hero.innerHTML = `<i class="ti ${running ? 'ti-shield-check' : 'ti-shield'}"></i>`;
+  b.appendChild(hero);
+
+  const body = document.createElement('div');
+  body.className = 'banner-body';
+  const h3 = document.createElement('div'); h3.className = 'banner-title'; h3.textContent = title;
+  const p = document.createElement('div'); p.className = 'banner-desc'; p.textContent = desc;
+  body.appendChild(h3); body.appendChild(p);
+  b.appendChild(body);
+
+  if (actions && actions.length) {
+    const a = document.createElement('div');
+    a.className = 'banner-actions';
+    actions.forEach(btn => a.appendChild(btn));
+    b.appendChild(a);
+  }
+
+  return b;
+}
+
+/** Disable the banner buttons and show a spinner on the given one. */
+function _setBannerPending(pendingBtn) {
+  const banner = document.querySelector('.home-banner');
+  if (!banner) return;
+  const btns = banner.querySelectorAll('.banner-actions .btn');
+  btns.forEach(b => { b.disabled = true; b.classList.add('loading'); });
+  if (pendingBtn) pendingBtn.innerHTML = '<span class="spin" style="width:18px;height:18px;border-width:2px;"></span>';
+}
+
+// In-flight guard: prevents a second click from firing while an operation runs
+// (was the root of "tripping" / double-stop).
+let _bannerBusy = false;
+
+async function startZapret() {
+  if (_bannerBusy) return;
+  _bannerBusy = true;
+  try {
+    const playBtn = document.querySelector('.home-banner .btn-p');
+    _setBannerPending(playBtn);
     const r = await window.api.flowseal.start();
     if (!r.ok) ui.toast('Ошибка: ' + r.error, 'err');
   } catch (e) {
     ui.toast('Ошибка запуска: ' + e.message, 'err');
+  } finally {
+    _bannerBusy = false;
   }
 }
 
 async function stopZapret() {
-  const confirm = await new Promise(resolve => {
-    const okBtn = ui.btn('Остановить', { variant: 'd', icon: 'player-stop', onclick: () => { ui.hideModal(); resolve(true); } });
-    const cancelBtn = ui.btn('Отмена', { variant: 's', onclick: () => { ui.hideModal(); resolve(false); } });
-    ui.modal('Остановка Zapret', `
-      <div style="text-align:center;padding:16px 0;">
-        <i class="ti ti-player-stop" style="font-size:40px;color:var(--orange);margin-bottom:12px;display:block;"></i>
-        <p style="font-size:15px;color:var(--text);margin-bottom:4px;">Остановить обход DPI-блокировок?</p>
-        <p style="font-size:13px;color:var(--text-tertiary);">Защита будет отключена. Вы сможете запустить Zapret снова в любой момент.</p>
-      </div>`,
-      { footer: [cancelBtn, okBtn] }
-    );
-  });
-  if (!confirm) return;
+  if (_bannerBusy) return;
+  _bannerBusy = true;
   try {
-    const banner = document.querySelector('.home-banner');
-    const btns = banner ? banner.querySelectorAll('.btn') : [];
-    btns.forEach(b => { b.disabled = true; b.classList.add('loading'); });
-    const stopBtn = banner?.querySelector('.btn-d');
-    if (stopBtn) { stopBtn.innerHTML = '<span class="spin" style="width:18px;height:18px;border-width:2px;"></span>'; }
-
+    const stopBtn = document.querySelector('.home-banner .btn-d');
+    _setBannerPending(stopBtn);
     await window.api.flowseal.stop();
   } catch (e) {
     ui.toast('Ошибка остановки: ' + e.message, 'err');
-  }
-}
-
-async function restartZapret() {
-  try {
-    const banner = document.querySelector('.home-banner');
-    const btns = banner ? banner.querySelectorAll('.btn') : [];
-    btns.forEach(b => { b.disabled = true; b.classList.add('loading'); });
-    const restartBtn = banner?.querySelector('.btn-s');
-    if (restartBtn) { restartBtn.innerHTML = '<span class="spin" style="width:18px;height:18px;border-width:2px;"></span>'; }
-
-    const r = await window.api.flowseal.stop();
-    if (r && r.ok) {
-      await new Promise(r => setTimeout(r, 800));
-      await window.api.flowseal.start();
-    }
-  } catch (e) {
-    ui.toast('Ошибка перезапуска: ' + e.message, 'err');
+  } finally {
+    _bannerBusy = false;
   }
 }
 
@@ -185,8 +209,10 @@ function renderHome() {
 
   page.appendChild(content);
 
-  // Sync render (banner + cached stats)
-  updateHomeStatus();
+  // Sync render. `force` bypasses the state-dedup guard: since renderHome just
+  // wiped `.home-banner` from the DOM, we must always repopulate it here, even if
+  // the running state did not change since the last visit.
+  updateHomeStatus({ force: true });
 
   // Async fetch stats in background — fills data silently
   loadHomeStats();

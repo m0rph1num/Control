@@ -69,7 +69,7 @@ function renderCurrentVersion(current, flowseal, installed) {
   if (!el) return;
   el.innerHTML = '';
 
-  const appVer = current?.version || '1.0.0';
+  const appVer = current?.version || '1.0.1';
   const fsVer = flowseal?.version || '0.0.0';
   const fsInstalled = flowseal?.installed;
   const activeFolder = current?.activeFolder || '';
@@ -345,10 +345,11 @@ async function downloadVersion(version) {
   const body = dlBuildModal(version);
   ui.modal(`Загрузка ${version}`, body);
 
-  let unsub;
+  let unsub = null;
   try {
     unsub = window.api.updater.onProgress((p) => dlUpdateUI(p));
   } catch { /* ignore */ }
+  const cleanup = () => { if (typeof unsub === 'function') unsub(); };
 
   let cancelled = false;
   const cancelBtn = document.getElementById('dl-cancel-btn');
@@ -357,6 +358,7 @@ async function downloadVersion(version) {
     cancelBtn.addEventListener('click', async () => {
       cancelled = true;
       await window.api.updater.cancelDownload();
+      cleanup();
       ui.hideModal();
       ui.toast('Скачивание отменено', 'info');
     });
@@ -369,6 +371,7 @@ async function downloadVersion(version) {
     const r = await window.api.updater.download(version);
     if (!r.ok) {
       if (cancelWrap) cancelWrap.style.display = 'none';
+      cleanup();
       ui.hideModal();
       ui.toast(r.error || 'Ошибка при скачивании', 'err');
       return;
@@ -377,24 +380,27 @@ async function downloadVersion(version) {
     // Hide cancel button during install phase
     if (cancelWrap) cancelWrap.style.display = 'none';
 
-    if (cancelled) return;
+    if (cancelled) { cleanup(); return; }
 
     dlUpdateUI({ phase: 'install', text: 'Распаковка архива...' });
 
     const ir = await window.api.updater.install(version, r.tempFile);
     if (ir.ok) {
-      if (cancelled) return;
+      if (cancelled) { cleanup(); return; }
       dlUpdateUI({ phase: 'done', text: 'Установлено!' });
       // Let the user see the success animation before closing
       await new Promise(r2 => setTimeout(r2, 700));
+      cleanup();
       ui.hideModal();
       ui.toast(`Версия ${version} установлена`, 'success');
       loadVersions();
     } else {
+      cleanup();
       ui.hideModal();
       ui.toast(ir.error || 'Ошибка установки', 'err');
     }
   } catch (e) {
+    cleanup();
     if (e.message === 'cancelled') return; // silent — already handled
     ui.hideModal();
     ui.toast('Ошибка: ' + (e.message || 'неизвестная'), 'err');
