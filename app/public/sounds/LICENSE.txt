@@ -1,0 +1,27 @@
+Control · Interface sounds
+=========================
+
+All files in this folder are original works created for Control. They were
+synthesised from scratch (sine partials, pink-noise transients, dynamics and
+short room reflection) and encoded to Ogg Vorbis at 48 kHz.
+
+No third-party samples are used, so the set carries the same licence as the
+rest of the project — see the LICENSE file in the repository root.
+
+Design notes
+------------
+The palette is tuned as a single family in C major:
+
+  tap       C5/G4  — 90 ms   press feedback for buttons and rows
+  toggle    A5/E6  — 160 ms  switch and checkbox state change
+  open      C5+G5  — 400 ms  dialog or panel appears
+  close     G5+C5  — 360 ms  dialog or panel dismisses
+  success   C5+G5+C6 — 720 ms protection started
+  warning   D5+Db5 — 500 ms  attention, recoverable state
+  error     G4+Eb4 — 560 ms  failed operation
+  launch    C3+G3+C4 — 1.05 s application start
+  proxy     E5+B5  — 300 ms  routing mode changed
+  stop      G4+Eb4 — 600 ms  protection stopped
+
+Peaks are normalised per event (from −7 dBFS for taps to −3 dBFS for errors)
+so the hierarchy stays readable without any per-call volume tweaking.

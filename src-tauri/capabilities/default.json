@@ -1,0 +1,15 @@
+{
+  "$schema": "https://schema.tauri.app/capabilities/2",
+  "identifier": "default",
+  "description": "Базовые разрешения для главного окна Control. Доступ к системе, shell и произвольным файлам не предоставляется — только собственный IPC-интерфейс и управление окном.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-close",
+    "core:window:allow-start-dragging",
+    "dialog:default",
+    "notification:default"
+  ]
+}

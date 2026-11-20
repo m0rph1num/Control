@@ -1,56 +1,15 @@
 {
   "name": "control",
-  "version": "1.0.1",
-  "description": "Control — графическая оболочка для Flowseal Zapret. Управляйте обходом DPI-блокировок без командной строки.",
-  "main": "main.js",
-  "scripts": {
-    "start": "node scripts/launch-electron.js .",
-    "dev": "node scripts/launch-electron.js . --dev",
-    "build": "electron-builder build --win --config"
-  },
-  "devDependencies": {
-    "electron": "^26.6.10",
-    "electron-builder": "^24.13.3"
-  },
-  "author": "Morphine",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Control — графическая оболочка для Flowseal Zapret",
   "license": "MIT",
-  "build": {
-    "appId": "com.morphine.control",
-    "productName": "Control",
-    "directories": {
-      "output": "release"
-    },
-    "files": [
-      "**/*",
-      "!assets/*",
-      "assets/app-icon.png"
-    ],
-    "extraResources": [
-      {
-        "from": "assets",
-        "to": "assets",
-        "filter": [
-          "**/*"
-        ]
-      }
-    ],
-    "win": {
-      "icon": "assets/app-icon.png",
-      "requestedExecutionLevel": "requireAdministrator",
-      "target": [
-        "nsis"
-      ]
-    },
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
-      "installerIcon": "assets/app-icon.ico",
-      "uninstallerIcon": "assets/app-icon.ico",
-      "installerHeaderIcon": "assets/app-icon.ico",
-      "createDesktopShortcut": true,
-      "shortcutName": "Control",
-      "artifactName": "Control-Setup-${version}.${ext}",
-      "runAfterFinish": false
-    }
+  "scripts": {
+    "dev": "npm --prefix app run dev",
+    "build": "npm --prefix app run build",
+    "typecheck": "npm --prefix app run typecheck",
+    "lint": "npm --prefix app run lint",
+    "test": "npm --prefix app run test",
+    "tauri": "node app/node_modules/@tauri-apps/cli/tauri.js"
   }
 }
