@@ -1,7 +1,6 @@
 import { errorText } from "@/shared/error";
 import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
 import { toast } from "sonner";
-import { playSound } from "@/shared/sound";
 import { api, type TgwsStatus } from "@/shared/api";
 import { Page, PageHeader, SectionCard, FieldLabel } from "@/shared/ui/screen";
 import { Button } from "@/components/ui/button";
@@ -59,8 +58,6 @@ export function TgProxyScreen() {
       const next = await work();
       setStatus(next);
       setPort(String(next.port));
-      if (key === "start") playSound("proxy");
-      else if (key === "stop") playSound("stop");
       toast.success(done, { id: t });
       await refreshLogs();
     } catch (e) {

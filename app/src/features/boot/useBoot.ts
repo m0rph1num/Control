@@ -19,7 +19,7 @@ const STEPS: { id: string; label: string }[] = [
 ];
 
 const STEP_FLOOR = 130;
-const TOTAL_FLOOR = 900;
+const TOTAL_FLOOR = 1100;
 const LEAVE_MS = 320;
 
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -74,10 +74,12 @@ export function useBoot(): BootState {
           if (step.id === "core") {
             await api.getAppInfo();
           } else if (step.id === "settings") {
-            await api.settingsGet();
+            const settings = await api.settingsGet();
+            const dir = settings.controlDir;
+            const confirmed = settings.dataDirConfirmed === true;
+            needed = typeof dir !== "string" || dir.trim().length === 0 || !confirmed;
           } else if (step.id === "versions") {
-            const list = await api.versionsList();
-            needed = list.length === 0;
+            await api.versionsList();
           } else if (step.id === "service") {
             await Promise.all([api.serviceStatus(), api.protectionSnapshot()]);
           } else if (step.id === "autostart") {

@@ -36,6 +36,7 @@ import {
 } from "@/components/ui/select";
 import { Icon } from "@/shared/ui/Icon";
 import { cn } from "cn";
+import { AutoProfile } from "@/features/profiles/AutoProfile";
 
 const GAME_OPTIONS: { value: GameFilterMode; label: string }[] = [
   { value: "disabled", label: "Выключен" },
@@ -229,6 +230,11 @@ export function ProfilesScreen() {
     }
   };
 
+  const acceptGenerated = async (profile: Profile) => {
+    setJustSaved(profile.id);
+    await load(profile.id);
+  };
+
   const apply = async (profile: Profile) => {
     setApplyingId(profile.id);
     const t = toast.loading(`Применяю «${profile.name}»…`);
@@ -377,6 +383,8 @@ export function ProfilesScreen() {
           </div>
         }
       />
+
+      <AutoProfile onSaved={acceptGenerated} />
 
       <div className="grid gap-6 lg:grid-cols-[minmax(0,320px)_minmax(0,1fr)]">
         <div className="flex min-w-0 flex-col gap-2.5">

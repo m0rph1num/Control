@@ -10,7 +10,6 @@ import {
   type TgwsStatus,
 } from "@/shared/api";
 import { useDesign, type ThemeMode } from "@/shared/theme";
-import { playSound, setSoundsEnabled, soundsEnabled } from "@/shared/sound";
 import type { PaletteItem } from "@/components/fx/command-palette";
 import type { IconName } from "@/shared/ui/Icon";
 
@@ -47,7 +46,7 @@ const TAB_KEYWORDS: Record<string, string[]> = {
   versions: ["версии", "zapret", "сборка", "обновление", "release"],
   backup: ["бэкап", "резервная", "копия", "экспорт", "импорт"],
   diagnostics: ["диагностика", "проверка", "система", "отчёт"],
-  settings: ["настройки", "автозапуск", "трей", "тема", "звук", "приложение"],
+  settings: ["настройки", "автозапуск", "трей", "тема", "приложение"],
 };
 
 const THEME_LABEL: Record<ThemeMode, string> = {
@@ -297,21 +296,6 @@ export function usePaletteItems({
       });
     }
 
-    const soundOn = soundsEnabled();
-    items.push({
-      id: "system:sounds",
-      group: "Система",
-      label: soundOn ? "Выключить звуки интерфейса" : "Включить звуки интерфейса",
-      hint: "Короткие сигналы действий",
-      icon: "info-circle-bold",
-      keywords: ["звук", "звуки", "audio", "уведомления"],
-      run: () => {
-        setSoundsEnabled(!soundOn);
-        if (!soundOn) playSound("toggle");
-        toast.success(soundOn ? "Звуки выключены" : "Звуки включены");
-      },
-    });
-
     for (const mode of ["light", "dark", "system"] as ThemeMode[]) {
       if (mode === theme) continue;
       items.push({
@@ -323,7 +307,6 @@ export function usePaletteItems({
         keywords: ["тема", "оформление", THEME_LABEL[mode]],
         run: () => {
           setTheme(mode);
-          playSound("toggle");
         },
       });
     }

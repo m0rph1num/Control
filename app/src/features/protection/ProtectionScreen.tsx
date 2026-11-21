@@ -1,11 +1,11 @@
 import { errorText } from "@/shared/error";
 import { useEffect, useState, type CSSProperties } from "react";
 import { toast } from "sonner";
-import { playSound } from "@/shared/sound";
 import { api, onProtectionState, type ProtectionSnapshot, type StrategyInfo } from "@/shared/api";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/shared/ui/Icon";
 import { ListRow, Page, PageHeader, SectionCard } from "@/shared/ui/screen";
+import { StrategyAdvisor } from "@/features/protection/StrategyAdvisor";
 
 const STATE_META: Record<
   string,
@@ -82,13 +82,17 @@ export function ProtectionScreen() {
     }
   };
 
+  const adoptStrategy = (value: string) => {
+    setSelected(value);
+    remember(value);
+  };
+
   const start = async () => {
     setBusy(true);
     remember(selected);
     const t = toast.loading("Запускаю защиту…");
     try {
       await api.protectionStart(selected);
-      playSound("launch");
       toast.success("Защита запущена", { id: t });
     } catch (e) {
       toast.error("Не удалось запустить", { id: t, description: errorText(e) });
@@ -102,7 +106,6 @@ export function ProtectionScreen() {
     const t = toast.loading("Останавливаю…");
     try {
       await api.protectionStop();
-      playSound("stop");
       toast.success("Защита остановлена", { id: t });
     } catch (e) {
       toast.error("Не удалось остановить", { id: t, description: errorText(e) });
@@ -210,6 +213,8 @@ export function ProtectionScreen() {
           </div>
         </div>
       </section>
+
+      <StrategyAdvisor active={active} selected={selected} onApplied={adoptStrategy} />
 
       <SectionCard
         title="Стратегия"

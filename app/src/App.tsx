@@ -17,10 +17,10 @@ import { DesignProvider } from "@/shared/theme";
 import { ThemeMenu } from "@/components/fx/theme-menu";
 import { CommandPalette } from "@/components/fx/command-palette";
 import { usePaletteItems } from "@/shared/palette";
-import { playSound, warmUpSound } from "@/shared/sound";
 import { ScrollArea } from "@/components/fx/scroll-area";
 import { ProtectionScreen } from "@/features/protection/ProtectionScreen";
 import { Titlebar } from "@/components/layout/Titlebar";
+import { UpdateBanner } from "@/components/layout/UpdateBanner";
 import { BootScreen } from "@/features/boot/BootScreen";
 import { useBoot } from "@/features/boot/useBoot";
 import { WhatsNewModal } from "@/features/whatsnew/WhatsNewModal";
@@ -135,16 +135,11 @@ function ControlApp() {
     const onKey = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
-        playSound(paletteOpen ? "close" : "open");
         setPaletteOpen((value) => !value);
       }
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [paletteOpen]);
-
-  useEffect(() => {
-    warmUpSound();
   }, []);
 
   useEffect(() => {
@@ -160,20 +155,6 @@ function ControlApp() {
   }, []);
 
   const paletteItems = usePaletteItems({ open: paletteOpen, go: selectTab, tabs: ALL_TABS });
-
-  useEffect(() => {
-    const onPointerDown = (event: PointerEvent) => {
-      const target = event.target;
-      if (!(target instanceof Element)) return;
-      const control = target.closest<HTMLElement>("button, [role='button'], a[href]");
-      if (!control) return;
-      if (control.hasAttribute("disabled") || control.getAttribute("aria-disabled") === "true") return;
-      if (control.dataset.sound === "off") return;
-      playSound("tap");
-    };
-    document.addEventListener("pointerdown", onPointerDown, true);
-    return () => document.removeEventListener("pointerdown", onPointerDown, true);
-  }, []);
 
   return (
     <div className="app-backdrop flex h-screen flex-col overflow-hidden text-foreground">
@@ -250,6 +231,8 @@ function ControlApp() {
             ))}
           </nav>
   
+          <UpdateBanner collapsed={collapsed} />
+
           <div
             className={cn(
               "flex items-center gap-2 border-t border-[var(--sidebar-border)] px-3.5 py-3.5",
@@ -266,11 +249,7 @@ function ControlApp() {
                 )}
                 <button
                   type="button"
-                  data-sound="off"
-                  onClick={() => {
-                    playSound("open");
-                    setWhatsNewOpen(true);
-                  }}
+                  onClick={() => setWhatsNewOpen(true)}
                   className="ml-auto rounded-[6px] px-2 py-1 text-[11.5px] text-muted-foreground transition-colors hover:bg-[var(--sidebar-accent)] hover:text-foreground"
                   title="Что нового в Control 2.0.0"
                 >
@@ -284,15 +263,14 @@ function ControlApp() {
         <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
           <ScrollArea contentClassName="px-8 py-7 xl:px-10 xl:py-8">
             <div className="mx-auto w-full max-w-[1080px]">
-              {showSetup ? (
-                <Suspense fallback={<TabFallback />}>
+              <Suspense fallback={<TabFallback />}>
+                <TabErrorBoundary>
+                  <View />
+                </TabErrorBoundary>
+              </Suspense>
+              {showSetup && (
+                <Suspense fallback={null}>
                   <SetupScreen onDone={() => window.location.reload()} />
-                </Suspense>
-              ) : (
-                <Suspense fallback={<TabFallback />}>
-                  <TabErrorBoundary>
-                    <View />
-                  </TabErrorBoundary>
                 </Suspense>
               )}
             </div>
@@ -311,13 +289,7 @@ function ControlApp() {
         items={paletteItems}
       />
 
-      <WhatsNewModal
-        open={whatsNewOpen}
-        onOpenChange={(open) => {
-          if (!open) playSound("close");
-          setWhatsNewOpen(open);
-        }}
-      />
+      <WhatsNewModal open={whatsNewOpen} onOpenChange={setWhatsNewOpen} />
 
       <Toaster position="bottom-right" />
     </div>

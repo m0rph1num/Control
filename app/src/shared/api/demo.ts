@@ -1,4 +1,6 @@
 import type {
+  AdvisorApplyResult,
+  AdvisorReport,
   AppInfo,
   AppliedProfile,
   DiagnosticCheck,
@@ -17,6 +19,7 @@ import type {
   StrategyInfo,
   TgwsInstallResult,
   TgwsStatus,
+  UpdateInfo,
   UserList,
 } from "./index";
 
@@ -132,6 +135,168 @@ let profiles: Profile[] = [
     source: "local",
   },
 ];
+
+const demoAdvisorProfile: Profile = {
+  id: "",
+  name: "Авто · Игры и Discord",
+  description:
+    "Собрано автоматически: игры: Counter-Strike 2, Steam · Discord · MTU 1500 · средняя задержка 52 мс · DNS 1.1.1.1, 8.8.8.8.",
+  strategy: "game_filter.bat",
+  gameFilter: "all",
+  ipset: "loaded",
+  fakes: { discord: "fake tls", game: "fake http" },
+  lists: {},
+  createdAt: "",
+  updatedAt: "",
+  source: "auto",
+};
+
+const demoAdvisorReport: AdvisorReport = {
+  scannedAt: "2026-11-20T09:12:00.000Z",
+  durationMs: 2480,
+  network: {
+    dnsOk: true,
+    dnsMs: 18,
+    mtu: 1500,
+    dnsServers: ["1.1.1.1", "8.8.8.8"],
+    gateway: "192.168.1.1",
+    localIp: "192.168.1.42",
+    provider: "JSC Ufanet",
+    asn: "AS57128",
+    city: null,
+    country: "Russian Federation",
+    publicIp: "95.105.68.66",
+    downloadMbps: 53,
+    latency: [
+      {
+        id: "discord",
+        label: "Discord",
+        host: "discord.com",
+        ok: true,
+        ms: 34,
+        avgMs: 35,
+        jitterMs: 1,
+        lossPercent: 0,
+        method: "icmp",
+        tlsOk: true,
+        tlsMs: 135,
+      },
+      {
+        id: "youtube",
+        label: "YouTube",
+        host: "www.youtube.com",
+        ok: true,
+        ms: 65,
+        avgMs: 71,
+        jitterMs: 5,
+        lossPercent: 0,
+        method: "icmp",
+        tlsOk: false,
+        tlsMs: null,
+      },
+      {
+        id: "steam",
+        label: "Steam",
+        host: "store.steampowered.com",
+        ok: true,
+        ms: 57,
+        avgMs: 59,
+        jitterMs: 3,
+        lossPercent: 0,
+        method: "icmp",
+        tlsOk: true,
+        tlsMs: 209,
+      },
+      {
+        id: "telegram",
+        label: "Telegram",
+        host: "web.telegram.org",
+        ok: false,
+        ms: null,
+        avgMs: null,
+        jitterMs: null,
+        lossPercent: 100,
+        method: "tcp",
+        tlsOk: false,
+        tlsMs: null,
+      },
+      {
+        id: "cloudflare",
+        label: "Cloudflare",
+        host: "1.1.1.1",
+        ok: true,
+        ms: 14,
+        avgMs: 14,
+        jitterMs: 0,
+        lossPercent: 0,
+        method: "icmp",
+        tlsOk: true,
+        tlsMs: 117,
+      },
+    ],
+    avgLatencyMs: 44,
+    jitterMs: 5,
+    lossPercent: 0,
+    reachable: 4,
+    tlsReachable: 3,
+    total: 5,
+  },
+  apps: [
+    { id: "cs2", name: "Counter-Strike 2", kind: "game", source: "process", running: true },
+    { id: "steam", name: "Steam", kind: "launcher", source: "process", running: true },
+    { id: "discord", name: "Discord", kind: "messenger", source: "process", running: true },
+    { id: "chrome", name: "Google Chrome", kind: "browser", source: "process", running: true },
+  ],
+  candidates: [
+    {
+      value: "game_filter.bat",
+      label: "general (ALT13)",
+      kind: "version",
+      score: 85,
+      reasons: [
+        "Голосовой Discord",
+        "hostfakesplit: www.google.com, mail.ru",
+        "маскировка TTL (fooling=ts)",
+      ],
+      tags: ["QUIC", "fake-TLS", "hostfakesplit", "ts"],
+    },
+    {
+      value: "general.bat",
+      label: "general (ALT12)",
+      kind: "version",
+      score: 84,
+      reasons: ["Голосовой Discord", "hostfakesplit: www.google.com", "перекрытие 681 байт"],
+      tags: ["QUIC", "fake-TLS", "hostfakesplit"],
+    },
+    {
+      value: "preset:Мой пресет",
+      label: "Мой пресет",
+      kind: "preset",
+      score: 79,
+      reasons: ["Ваш собственный пресет", "маскировка TTL (fooling=ts)", "повторы 10 для плохих линий"],
+      tags: ["пресет", "ts"],
+    },
+  ],
+  recommended: "game_filter.bat",
+  summary:
+    "Компьютер изучен: JSC Ufanet (AS57128), Russian Federation, игр: 1, приложений: 3, средний отклик 44 мс, джиттер 5 мс, доступно 4 из 5 узлов, скорость 53 Мбит/с, MTU 1500. Лучший вариант — general (ALT13) (соответствие 85%).",
+  profile: demoAdvisorProfile,
+};
+
+let savedAdvisor: AdvisorReport | null = null;
+
+const demoUpdate: UpdateInfo = {
+  available: true,
+  currentVersion: "2.0.0",
+  version: "2.1.0",
+  notes: "Автоподбор стратегии, авто-профили и обновление в один клик.",
+  publishedAt: "2026-11-20T08:00:00.000Z",
+  assetName: "Control_2.1.0_x64-setup.exe",
+  assetUrl:
+    "https://github.com/m0rph1num/Control/releases/download/v2.1.0/Control_2.1.0_x64-setup.exe",
+  size: 18_350_000,
+  pageUrl: "https://github.com/m0rph1num/Control/releases/latest",
+};
 
 let tgws: TgwsStatus = {
   installed: true,
@@ -664,5 +829,37 @@ export const demoApi = {
   autostartSet: async (enabled: boolean): Promise<boolean> => {
     autostartEnabled = enabled;
     return autostartEnabled;
+  },
+  advisorScan: async (): Promise<AdvisorReport> => {
+    for (const id of ["network", "apps", "strategies", "profile"]) {
+      emit("advisor://step", { id, status: "running" });
+      await delay(620);
+      emit("advisor://step", { id, status: "ok" });
+    }
+    const next = { ...demoAdvisorReport, scannedAt: nowIso() };
+    savedAdvisor = next;
+    return next;
+  },  advisorSaved: async (): Promise<AdvisorReport | null> => savedAdvisor,
+  advisorApply: async (strategyValue: string): Promise<AdvisorApplyResult> => {
+    const live = protection.state === "active";
+    if (live) {
+      setProtection("starting", `Применяю ${strategyValue} (демо)`);
+      await delay(600);
+    }
+    settings.lastStrategy = strategyValue;
+    setProtection("active", `Защита работает · ${strategyValue} (демо)`);
+    return { strategy: strategyValue, started: true, liveApplied: live };
+  },
+  updateCheck: async (): Promise<UpdateInfo> => ({ ...demoUpdate }),
+  updateDownload: async (version: string, _assetUrl: string): Promise<string> => {
+    const total = demoUpdate.size ?? 18_350_000;
+    for (let i = 2_000_000; i <= total; i += 2_000_000) {
+      await delay(150);
+      emit("update://progress", { downloaded: Math.min(i, total), total });
+    }
+    return `C:\\Users\\Demo\\AppData\\Roaming\\control\\updates\\Control-${version}-setup.exe`;
+  },
+  updateInstall: async (_installerPath: string) => {
+    await delay(700);
   },
 };

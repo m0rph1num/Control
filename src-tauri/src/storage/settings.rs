@@ -24,6 +24,31 @@ pub fn settings_path() -> Result<PathBuf, AppError> {
     Ok(app_data_dir()?.join("settings.json"))
 }
 
+const SCHEMA_VERSION: u64 = 2;
+
+pub fn migrate_legacy_settings() {
+    let Ok(snapshot) = read_settings_recovering() else {
+        return;
+    };
+    let Value::Object(mut content) = snapshot.content else {
+        return;
+    };
+    if content.get("schemaVersion").and_then(Value::as_u64) == Some(SCHEMA_VERSION) {
+        return;
+    }
+    content.remove("lastState");
+    content.remove("advisor");
+    content.remove("flowsealPath");
+    content.insert("dataDirConfirmed".into(), Value::Bool(false));
+    content.insert("schemaVersion".into(), Value::from(SCHEMA_VERSION));
+    let Ok(path) = settings_path() else {
+        return;
+    };
+    if let Err(error) = atomic::write_json_atomic(&path, &Value::Object(content), true) {
+        tracing::warn!(%error.user_message, "не удалось перенести настройки на новую схему");
+    }
+}
+
 pub fn flowseal_config_path() -> Result<PathBuf, AppError> {
     Ok(app_data_dir()?.join("flowseal-config.json"))
 }

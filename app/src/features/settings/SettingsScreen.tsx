@@ -9,7 +9,7 @@ import { Modal } from "@/components/ui/modal";
 import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Icon } from "@/shared/ui/Icon";
-import { playSound, setSoundsEnabled, soundsEnabled } from "@/shared/sound";
+import { BrandMark } from "@/shared/ui/BrandMark";
 import { useDesign, type ThemeMode } from "@/shared/theme";
 import { WhatsNewModal } from "@/features/whatsnew/WhatsNewModal";
 import { cn } from "cn";
@@ -23,7 +23,6 @@ const LICENSES: { name: string; version: string; author: string; license: string
   { name: "Tailwind CSS", version: "стили", author: "Tailwind Labs", license: "MIT" },
   { name: "Geist", version: "шрифт", author: "Vercel", license: "SIL OFL 1.1" },
   { name: "Solar Icons", version: "иконки", author: "480 Design", license: "MIT" },
-  { name: "Control Sounds", version: "звуки интерфейса", author: "Control", license: "как у проекта" },
 ];
 
 const THEME_OPTIONS: { value: ThemeMode; label: string }[] = [
@@ -46,7 +45,6 @@ export function SettingsScreen() {
   const [licensesOpen, setLicensesOpen] = useState(false);
   const [whatsNewOpen, setWhatsNewOpen] = useState(false);
   const [logoOk, setLogoOk] = useState(true);
-  const [sounds, setSounds] = useState(soundsEnabled);
 
   useEffect(() => {
     api
@@ -174,21 +172,6 @@ export function SettingsScreen() {
               hint="Показывать результат операций"
               checked={bool("notifications")}
               onChange={(v) => patch("notifications", v)}
-            />
-            <SettingRow
-              label="Звуки интерфейса"
-              hint="Короткие сигналы действий"
-              checked={sounds}
-              onChange={(value) => {
-                if (value) {
-                  setSoundsEnabled(true);
-                  playSound("toggle");
-                } else {
-                  playSound("close");
-                  setSoundsEnabled(false);
-                }
-                setSounds(value);
-              }}
             />
             <SettingRow
               label="Восстанавливать состояние"
@@ -353,23 +336,14 @@ export function SettingsScreen() {
 
       <SectionCard title="О приложении">
         <div className="flex flex-col gap-5">
-          <div className="flex items-start gap-3.5">
-            <img
-              src="/app-icon.svg"
-              alt=""
-              className="size-10 shrink-0 rounded-[10px]"
-              draggable={false}
-            />
+          <div className="flex items-start gap-3">
+            <BrandMark className="mt-0.5 size-11 shrink-0 text-[var(--ring)]" />
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-2">
-                <span className="text-[15px] font-semibold tracking-[-0.015em]">Control</span>
+                <span className="text-[16px] font-semibold tracking-[-0.02em]">Control</span>
                 <button
                   type="button"
-                  data-sound="off"
-                  onClick={() => {
-                    playSound("open");
-                    setWhatsNewOpen(true);
-                  }}
+                  onClick={() => setWhatsNewOpen(true)}
                   className="group/version inline-flex items-center gap-1 rounded-[5px] bg-[var(--fill)] px-1.5 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-[var(--fill-strong)] hover:text-foreground"
                   title="Что нового в Control 2.0.0"
                 >
@@ -381,7 +355,7 @@ export function SettingsScreen() {
                   />
                 </button>
               </div>
-              <p className="text-caption mt-1.5 leading-relaxed text-muted-foreground">
+              <p className="text-[12.5px] leading-relaxed text-muted-foreground">
                 Обход DPI для Windows. Бесплатно, без рекламы и телеметрии.
               </p>
             </div>
@@ -410,18 +384,20 @@ export function SettingsScreen() {
             </div>
           </div>
 
-          <div className="flex max-w-[74ch] flex-col gap-2.5 text-[11.5px] leading-relaxed text-muted-foreground">
+          <div className="grid gap-x-10 gap-y-4 border-t border-[var(--separator)] pt-4 text-[13px] leading-[1.7] text-muted-foreground md:grid-cols-2">
             <p>
               Control — независимая программа для Windows, разработанная Monolith Studios. Она не
-              является официальным продуктом Zapret и не связана с авторами Zapret, WinDivert,
-              TG WS Proxy или иных сторонних компонентов; их названия и права принадлежат
-              соответствующим правообладателям.
+              является официальным продуктом Zapret и не связана с авторами Zapret, WinDivert и
+              TG WS Proxy.
             </p>
             <p>
-              Сторонние компоненты используются на условиях их лицензий, права на них не изменяются
-              и не перераспределяются. Программа распространяется бесплатно, без рекламы и
-              телеметрии, и создана как некоммерческий проект: её цель — сделать обход DPI понятным
-              и предсказуемым.
+              Названия и права на сторонние компоненты принадлежат соответствующим правообладателям.
+              Компоненты используются на условиях их лицензий, права на них не изменяются и не
+              перераспределяются.
+            </p>
+            <p>
+              Программа распространяется бесплатно, без рекламы и телеметрии. Это некоммерческий
+              проект: его цель — сделать обход DPI понятным и предсказуемым.
             </p>
             <p>
               Программное обеспечение предоставляется «как есть», без явных и подразумеваемых
@@ -477,13 +453,7 @@ export function SettingsScreen() {
         </div>
       </Modal>
 
-      <WhatsNewModal
-        open={whatsNewOpen}
-        onOpenChange={(open) => {
-          if (!open) playSound("close");
-          setWhatsNewOpen(open);
-        }}
-      />
+      <WhatsNewModal open={whatsNewOpen} onOpenChange={setWhatsNewOpen} />
 
       <Modal
         open={confirmService !== null}

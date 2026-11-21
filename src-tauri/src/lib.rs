@@ -10,6 +10,10 @@ use tauri::{Manager, WebviewWindowBuilder};
 
 pub use errors::AppError;
 
+pub fn write_shortcut_helper() -> bool {
+    services::toast::write_shortcut_helper()
+}
+
 pub fn run() {
     let log = services::logging::init();
     services::logging::install_panic_hook();
@@ -30,8 +34,8 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
+            storage::settings::migrate_legacy_settings();
             let sink: Arc<dyn services::events::EventSink> =
                 Arc::new(services::events::TauriEventSink::new(app.handle().clone()));
             let app_state: Arc<state::AppState> = Arc::new(state::AppState::new(
@@ -53,21 +57,8 @@ pub fn run() {
             let handle = app.handle().clone();
             app_state.control.spawn_supervisor();
 
-            {
-                use tauri_plugin_notification::NotificationExt;
-                match app.notification().permission_state() {
-                    Ok(tauri_plugin_notification::PermissionState::Granted) => {
-                        tracing::info!("системные уведомления разрешены")
-                    }
-                    Ok(tauri_plugin_notification::PermissionState::Denied) => {
-                        tracing::warn!("системные уведомления запрещены в параметрах Windows")
-                    }
-                    Ok(_) => tracing::info!("разрешение на уведомления ещё не запрошено"),
-                    Err(error) => {
-                        tracing::warn!(%error, "не удалось проверить разрешение на уведомления")
-                    }
-                }
-            }
+            services::toast::ensure_identity();
+            services::toast::spawn_shortcut_helper();
 
             if services::autostart::launched_minimized() {
                 if let Some(win) = app.get_webview_window("main") {
@@ -154,6 +145,12 @@ pub fn run() {
             commands::autostart_get,
             commands::autostart_info,
             commands::autostart_set,
+            commands::advisor_scan,
+            commands::advisor_saved,
+            commands::advisor_apply,
+            commands::update_check,
+            commands::update_download,
+            commands::update_install,
         ])
         .run(tauri::generate_context!())
         .expect("запуск Tauri-приложения завершился ошибкой");

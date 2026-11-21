@@ -3,11 +3,13 @@ import { execSync } from "node:child_process";
 import path from "node:path";
 
 const root = path.resolve(import.meta.dirname, "..", "..");
+const manifest = path.join(root, "src-tauri", "Cargo.toml");
 const src = path.join(root, "src-tauri", "target", "release", "control-elevate.exe");
 
 if (!existsSync(src)) {
-  console.error("control-elevate.exe not found — run `cargo build --release --bins` first");
-  process.exit(1);
+  execSync(`cargo build --release --bin control-elevate --manifest-path "${manifest}"`, {
+    stdio: "inherit",
+  });
 }
 
 const version = execSync("rustc -vV", { encoding: "utf8" });

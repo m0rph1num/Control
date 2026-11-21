@@ -680,6 +680,7 @@ pub async fn setup_apply(
                 .with_details(serde_json::json!({ "error": e.to_string() }))
         })?;
         content["controlDir"] = serde_json::json!(path.to_string_lossy());
+        content["dataDirConfirmed"] = serde_json::json!(true);
     }
     for key in ["minimizeToTray", "notifications", "restoreState"] {
         if let Some(v) = options.get(key).and_then(|v| v.as_bool()) {
@@ -1060,4 +1061,141 @@ pub async fn autostart_info() -> Result<crate::services::autostart::AutostartInf
 pub async fn autostart_set(enabled: bool) -> Result<bool, AppError> {
     crate::services::autostart::set_enabled(enabled)?;
     Ok(crate::services::autostart::is_enabled())
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdvisorApplyResult {
+    pub strategy: String,
+    pub started: bool,
+    pub live_applied: bool,
+}
+
+#[tauri::command]
+pub async fn advisor_scan(
+    state: State<'_, Arc<AppState>>,
+) -> Result<crate::services::advisor::AdvisorReport, AppError> {
+    crate::services::advisor::scan(state.inner().as_ref()).await
+}
+
+#[tauri::command]
+pub async fn advisor_saved() -> Result<Option<crate::services::advisor::AdvisorReport>, AppError> {
+    let snapshot = crate::storage::settings::read_settings_recovering()?;
+    Ok(snapshot
+        .content
+        .get("advisor")
+        .and_then(|value| serde_json::from_value(value.clone()).ok()))
+}
+
+#[tauri::command]
+pub async fn advisor_apply(
+    state: State<'_, Arc<AppState>>,
+    strategy_value: String,
+) -> Result<AdvisorApplyResult, AppError> {
+    let (strategy_path, dir, game_mode) = resolve_strategy(&state, &strategy_value).await?;
+    persist_last_strategy(&state, &strategy_value).await;
+    let live_applied = state
+        .control
+        .reconfigure_with(strategy_path.clone(), dir.clone(), game_mode)
+        .await?;
+    if !live_applied {
+        state.control.start(strategy_path, dir, game_mode).await?;
+    }
+    Ok(AdvisorApplyResult {
+        strategy: strategy_value,
+        started: true,
+        live_applied,
+    })
+}
+
+#[tauri::command]
+pub async fn update_check() -> Result<crate::services::updater::UpdateInfo, AppError> {
+    tokio::task::spawn_blocking(crate::services::updater::check_blocking)
+        .await
+        .map_err(|e| {
+            AppError::new("INTERNAL", "Сбой проверки обновлений")
+                .with_details(serde_json::json!({ "error": e.to_string() }))
+        })?
+}
+
+#[tauri::command]
+pub async fn update_download(
+    state: State<'_, Arc<AppState>>,
+    version: String,
+    asset_url: String,
+) -> Result<String, AppError> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc as StdArc;
+
+    if !asset_url.starts_with("https://") {
+        return Err(AppError::new(
+            "INVALID_ARGUMENT",
+            "Разрешены только https-ссылки",
+        ));
+    }
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let done = StdArc::new(AtomicU64::new(0));
+    let total = StdArc::new(AtomicU64::new(0));
+    let (done_tx, total_tx) = (done.clone(), total.clone());
+
+    let download = tokio::task::spawn_blocking(move || {
+        let progress = |d: u64, t: u64| {
+            done_tx.store(d, Ordering::Relaxed);
+            total_tx.store(t, Ordering::Relaxed);
+        };
+        crate::services::updater::download_blocking(&asset_url, &version, &cancel, &progress)
+    });
+
+    let sink = state.sink.clone();
+    let progress_task = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            let d = done.load(Ordering::Relaxed);
+            let t = total.load(Ordering::Relaxed);
+            if t > 0 {
+                sink.emit_json(
+                    "update://progress",
+                    serde_json::json!({ "downloaded": d, "total": t }),
+                );
+            }
+        }
+    });
+
+    let result = download.await.map_err(|e| {
+        AppError::new("INTERNAL", "Задача обновления завершилась аварийно")
+            .with_details(serde_json::json!({ "error": e.to_string() }))
+    })?;
+    progress_task.abort();
+    let path = result?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+pub async fn update_install(app: tauri::AppHandle, installer_path: String) -> Result<(), AppError> {
+    let path = std::path::PathBuf::from(&installer_path);
+    let updates = crate::storage::settings::app_data_dir()?.join("updates");
+    let base = updates.canonicalize().unwrap_or(updates);
+    let canonical = path.canonicalize().map_err(|e| {
+        AppError::new("INSTALLER_MISSING", "Файл обновления не найден")
+            .with_details(serde_json::json!({ "error": e.to_string() }))
+    })?;
+    if !canonical.starts_with(&base) {
+        return Err(AppError::new(
+            "INVALID_ARGUMENT",
+            "Некорректный путь к обновлению",
+        ));
+    }
+
+    tokio::task::spawn_blocking(move || crate::services::updater::launch_installer(&canonical))
+        .await
+        .map_err(|e| {
+            AppError::new("INTERNAL", "Сбой запуска обновления")
+                .with_details(serde_json::json!({ "error": e.to_string() }))
+        })??;
+
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+        app.exit(0);
+    });
+    Ok(())
 }

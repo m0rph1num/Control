@@ -265,7 +265,6 @@ export function CommandPalette({
                   role="option"
                   aria-selected={active}
                   data-active={active ? "true" : undefined}
-                  data-sound="off"
                   onPointerEnter={() => setIndex(itemIndex)}
                   onClick={() => {
                     item.run();

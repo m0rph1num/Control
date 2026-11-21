@@ -25,13 +25,24 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self'; connect-src 'self' ipc: http://ipc.localhost; font-src 'self' data:"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost; font-src 'self' data:"
     }
   },
   "bundle": {
     "active": true,
     "targets": ["nsis"],
     "icon": ["icons/icon.ico", "icons/icon.png"],
-    "externalBin": ["control-elevate"]
+    "externalBin": ["control-elevate"],
+    "windows": {
+      "nsis": {
+        "installMode": "perMachine",
+        "installerHooks": "windows/installer.nsh",
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico",
+        "headerImage": "icons/nsis-header.bmp",
+        "sidebarImage": "icons/nsis-sidebar.bmp",
+        "uninstallerHeaderImage": "icons/nsis-header.bmp"
+      }
+    }
   }
 }

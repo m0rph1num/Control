@@ -157,6 +157,16 @@ export const api = isDemoRuntime()
   autostartGet: () => invoke<boolean>("autostart_get"),
   autostartInfo: () => invoke<AutostartInfo>("autostart_info"),
   autostartSet: (enabled: boolean) => invoke<boolean>("autostart_set", { enabled }),
+
+  advisorScan: () => invoke<AdvisorReport>("advisor_scan"),
+  advisorSaved: () => invoke<AdvisorReport | null>("advisor_saved"),
+  advisorApply: (strategyValue: string) =>
+    invoke<AdvisorApplyResult>("advisor_apply", { strategyValue }),
+
+  updateCheck: () => invoke<UpdateInfo>("update_check"),
+  updateDownload: (version: string, assetUrl: string) =>
+    invoke<string>("update_download", { version, assetUrl }),
+  updateInstall: (installerPath: string) => invoke<void>("update_install", { installerPath }),
 };
 
 export interface UserList {
@@ -242,6 +252,98 @@ export interface Profile {
 export interface AppliedProfile {
   strategy: string;
   liveApplied: boolean;
+}
+
+export interface LatencyProbe {
+  id: string;
+  label: string;
+  host: string;
+  ok: boolean;
+  ms: number | null;
+  avgMs: number | null;
+  jitterMs: number | null;
+  lossPercent: number;
+  method: string;
+  tlsOk: boolean;
+  tlsMs: number | null;
+}
+
+export interface NetworkProfile {
+  dnsOk: boolean;
+  dnsMs: number | null;
+  mtu: number | null;
+  dnsServers: string[];
+  gateway: string | null;
+  localIp: string | null;
+  provider: string | null;
+  asn: string | null;
+  city: string | null;
+  country: string | null;
+  publicIp: string | null;
+  downloadMbps: number | null;
+  latency: LatencyProbe[];
+  avgLatencyMs: number | null;
+  jitterMs: number | null;
+  lossPercent: number | null;
+  reachable: number;
+  tlsReachable: number;
+  total: number;
+}
+
+export interface DetectedApp {
+  id: string;
+  name: string;
+  kind: string;
+  source: string;
+  running: boolean;
+}
+
+export interface AdvisorCandidate {
+  value: string;
+  label: string;
+  kind: string;
+  score: number;
+  reasons: string[];
+  tags: string[];
+}
+
+export interface AdvisorReport {
+  scannedAt: string;
+  durationMs: number;
+  network: NetworkProfile;
+  apps: DetectedApp[];
+  candidates: AdvisorCandidate[];
+  recommended: string | null;
+  summary: string;
+  profile: Profile;
+}
+
+export interface AdvisorStep {
+  id: string;
+  status: "running" | "ok";
+}
+
+export interface AdvisorApplyResult {
+  strategy: string;
+  started: boolean;
+  liveApplied: boolean;
+}
+
+export interface UpdateInfo {
+  available: boolean;
+  currentVersion: string;
+  version: string;
+  notes: string | null;
+  publishedAt: string | null;
+  assetName: string | null;
+  assetUrl: string | null;
+  size: number | null;
+  pageUrl: string;
+}
+
+export interface UpdateProgress {
+  downloaded: number;
+  total: number;
 }
 
 export type CheckStatus = "pending" | "running" | "ok" | "warning" | "error";
@@ -344,4 +446,12 @@ export function onEvent<T>(
     return demoListen<T>(event, handler);
   }
   return listen<T>(event, (e) => handler(e.payload));
+}
+
+export function onAdvisorStep(handler: (step: AdvisorStep) => void): Promise<() => void> {
+  return onEvent<AdvisorStep>("advisor://step", handler);
+}
+
+export function onUpdateProgress(handler: (progress: UpdateProgress) => void): Promise<() => void> {
+  return onEvent<UpdateProgress>("update://progress", handler);
 }

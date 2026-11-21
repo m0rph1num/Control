@@ -12,6 +12,10 @@ pub fn running(name: &str) -> bool {
     imp::running(name)
 }
 
+pub fn list_all_names() -> Vec<String> {
+    imp::all_names()
+}
+
 #[cfg(windows)]
 mod imp {
     use super::ProcessEntry;
@@ -127,6 +131,23 @@ mod imp {
         unsafe { CloseHandle(snapshot) };
         found
     }
+
+    pub fn all_names() -> Vec<String> {
+        let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+        if snapshot == INVALID_HANDLE_VALUE {
+            return Vec::new();
+        }
+        let mut entry: ProcessEntry32W = unsafe { std::mem::zeroed() };
+        entry.dw_size = std::mem::size_of::<ProcessEntry32W>() as u32;
+        let mut names = Vec::new();
+        let mut next = unsafe { Process32FirstW(snapshot, &mut entry) } != 0;
+        while next {
+            names.push(exe_name(&entry));
+            next = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
+        }
+        unsafe { CloseHandle(snapshot) };
+        names
+    }
 }
 
 #[cfg(not(windows))]
@@ -138,6 +159,10 @@ mod imp {
     }
 
     pub fn find(_name: &str) -> Vec<ProcessEntry> {
+        Vec::new()
+    }
+
+    pub fn all_names() -> Vec<String> {
         Vec::new()
     }
 }

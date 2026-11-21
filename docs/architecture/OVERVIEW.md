@@ -87,7 +87,7 @@ Elevated-помощник — отдельный бинарь `src-tauri/src/bin
 
 ```
 app/src
-├─ App.tsx                 каркас: titlebar, сайдбар, ленивые экраны, палитра, звуки
+├─ App.tsx                 каркас: titlebar, сайдбар, ленивые экраны, палитра
 ├─ features/<name>/        экран и его локальная логика
 │  ├─ protection           состояние защиты и запуск/остановка
 │  ├─ profiles             список профилей, редактор, применение
@@ -107,10 +107,9 @@ app/src
 ├─ shared
 │  ├─ api                  единственная точка IPC + демо-заглушки
 │  ├─ theme                провайдер темы (light/dark/system), localStorage
-│  ├─ sound                движок звуков интерфейса
 │  ├─ operations           подписка на события операций
 │  ├─ palette              источник команд палитры
-│  └─ ui                   Icon, CloseGlyph, screen (SectionCard, ListRow, FieldLabel…)
+│  └─ ui                   Icon, BrandMark, CloseGlyph, screen (SectionCard, ListRow, FieldLabel…)
 └─ styles/global.css       токены, утилиты, анимации
 ```
 

@@ -31,7 +31,18 @@ chrono = { version = "0.4", features = ["serde"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 tauri-plugin-dialog = "2.8.3"
-tauri-plugin-notification = "2"
+
+[target.'cfg(windows)'.dependencies]
+tauri-winrt-notification = "0.8"
+winreg = "0.56"
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Variant",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_PropertiesSystem",
+] }
 
 [profile.release]
 lto = true

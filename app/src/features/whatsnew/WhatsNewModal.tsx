@@ -22,43 +22,55 @@ interface Group {
 }
 
 const VERSION = "2.0.0";
-const RELEASED = "20 ноября 2026";
+const RELEASED = "21 ноября 2026";
 
 const HIGHLIGHTS: Highlight[] = [
   {
     icon: "bolt-circle-bold",
-    title: "Быстрее отклик",
-    text: "Окно отвечает сразу, даже во время запуска защиты.",
+    title: "Подбор стратегии",
+    text: "Control проверяет сеть и сам выбирает лучшую стратегию.",
   },
   {
     icon: "shield-check-bold",
-    title: "Понятная защита",
-    text: "Видно, что происходит: запуск, работа, остановка, ошибка.",
+    title: "Легче в сорок раз",
+    text: "4 МБ вместо 166 МБ и запуск без задержек.",
   },
   {
-    icon: "sun-bold",
-    title: "Светлая тема",
-    text: "Две темы на выбор. Выбор сохраняется между запусками.",
+    icon: "refresh-bold",
+    title: "Обновление изнутри",
+    text: "Новая версия ставится из приложения и сама открывает Control.",
   },
 ];
 
 const GROUPS: Group[] = [
   {
     title: "Новое",
-    icon: "add-circle-bold",
+    icon: "bolt-circle-bold",
     tone: "accent",
     items: [
       {
+        lead: "Подбор стратегии.",
+        text: "Анализ провайдера, задержки, потерь и TLS — с оценкой и объяснением выбора.",
+      },
+      {
+        lead: "Автопрофиль.",
+        text: "Готовая конфигурация под ваш компьютер, а не усреднённый шаблон.",
+      },
+      {
+        lead: "Обновление из приложения.",
+        text: "Скачивание, установка и перезапуск без перехода на GitHub.",
+      },
+      {
+        lead: "Выбор папки данных.",
+        text: "Версии Zapret, профили и пресеты хранятся там, где удобно.",
+      },
+      {
         lead: "Светлая тема.",
-        text: "Переключается в настройках — удобно днём и при ярком свете.",
+        text: "Переключается в настройках и учитывает системную.",
       },
       {
         lead: "Поиск по программе.",
         text: "Ctrl + K находит раздел или действие за пару букв.",
-      },
-      {
-        lead: "Мастер первого запуска.",
-        text: "Подсказывает, где взять сборку Zapret, и помогает включить защиту.",
       },
       {
         lead: "Резервные копии.",
@@ -216,7 +228,6 @@ export function WhatsNewModal({
           <DialogPrimitive.Close
             className="absolute right-4 top-4 grid size-8 place-items-center rounded-[7px] text-muted-foreground transition-colors hover:bg-[var(--fill)] hover:text-foreground"
             aria-label="Закрыть"
-            data-sound="off"
           >
             <CloseGlyph size={16} />
           </DialogPrimitive.Close>

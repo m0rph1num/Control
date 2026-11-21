@@ -19,5 +19,18 @@ export default defineConfig({
     target: "chrome110",
     outDir: "dist",
     sourcemap: false,
+    cssCodeSplit: true,
+    reportCompressedSize: false,
+    rolldownOptions: {
+      output: {
+        codeSplitting: {
+          groups: [
+            { name: "react", test: /[\\/]node_modules[\\/](react|react-dom|scheduler)[\\/]/ },
+            { name: "radix", test: /[\\/]node_modules[\\/](radix-ui|@radix-ui)[\\/]/ },
+            { name: "tauri", test: /[\\/]node_modules[\\/]@tauri-apps[\\/]/ },
+          ],
+        },
+      },
+    },
   },
 });

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { cn } from "cn";
 import { isDemo } from "@/shared/api";
+import { BrandMark } from "@/shared/ui/BrandMark";
 import { Icon } from "@/shared/ui/Icon";
 
 type ControlKind = "minimize" | "maximize" | "restore" | "close";
@@ -99,7 +100,7 @@ export function Titlebar({
     >
       <div
         className={cn(
-          "flex items-center gap-2.5 border-r border-[var(--sidebar-border)] bg-[var(--sidebar)] transition-[width] duration-150 ease-out",
+          "flex items-center gap-2 border-r border-[var(--sidebar-border)] bg-[var(--sidebar)] transition-[width] duration-150 ease-out",
           collapsed ? "justify-center px-0" : "pl-4 pr-2.5",
         )}
         style={{ width: collapsed ? 64 : 240 }}
@@ -112,11 +113,11 @@ export function Titlebar({
             title="Развернуть панель"
             aria-label="Развернуть панель"
           >
-            <img src="/logo.svg" alt="" className="size-5" draggable={false} />
+            <BrandMark className="size-6 text-[var(--ring)]" />
           </button>
         ) : (
           <>
-            <img src="/logo.svg" alt="" className="size-5 shrink-0" draggable={false} />
+            <BrandMark className="size-6 shrink-0 text-[var(--ring)]" />
             <span className="truncate text-[13.5px] font-semibold tracking-[-0.012em]">Control</span>
             <button
               type="button"
