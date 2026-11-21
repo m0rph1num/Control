@@ -345,9 +345,9 @@ export function SettingsScreen() {
                   type="button"
                   onClick={() => setWhatsNewOpen(true)}
                   className="group/version inline-flex items-center gap-1 rounded-[5px] bg-[var(--fill)] px-1.5 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-[var(--fill-strong)] hover:text-foreground"
-                  title="Что нового в Control 2.0.0"
+                  title="Что нового в Control"
                 >
-                  {appInfo?.version ?? "2.0.0"}
+                  {appInfo?.version ?? "2.0.1"}
                   <Icon
                     name="alt-arrow-right-bold"
                     size={10}

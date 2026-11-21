@@ -251,9 +251,9 @@ function ControlApp() {
                   type="button"
                   onClick={() => setWhatsNewOpen(true)}
                   className="ml-auto rounded-[6px] px-2 py-1 text-[11.5px] text-muted-foreground transition-colors hover:bg-[var(--sidebar-accent)] hover:text-foreground"
-                  title="Что нового в Control 2.0.0"
+                  title="Что нового в Control"
                 >
-                  2.0.0
+                  2.0.1
                 </button>
               </>
             )}

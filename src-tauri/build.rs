@@ -2,6 +2,13 @@ fn main() {
     let target = std::env::var("TARGET").unwrap_or_default();
     println!("cargo:rustc-env=TARGET={target}");
 
+    // Windows gives the main thread 1 MB by default, which is not enough for the
+    // WebView2 event dispatch chain in optimized builds. Match the 8 MB that
+    // Rust uses on other platforms.
+    if target.contains("msvc") {
+        println!("cargo:rustc-link-arg=/STACK:8388608");
+    }
+
     // tauri-build validates externalBin paths during the build script. The real
     // helper is produced by `npm run bundle:helper`; create a placeholder so
     // plain `cargo check`/`clippy`/`test` work without a prior bundle step.
