@@ -35,13 +35,14 @@ export function VersionsScreen() {
   const [availableLoading, setAvailableLoading] = useState(false);
   const [pendingOpId, setPendingOpId] = useState<string | null>(null);
   const [pendingVersion, setPendingVersion] = useState<string | null>(null);
+  const [installingVersion, setInstallingVersion] = useState<string | null>(null);
   const [toDelete, setToDelete] = useState<InstalledVersion | null>(null);
   const [removing, setRemoving] = useState<string | null>(null);
   const [switching, setSwitching] = useState<string | null>(null);
   const [freshFolder, setFreshFolder] = useState<string | null>(null);
   const operations = useOperations();
   const pendingOp = operations.find((op) => op.id === pendingOpId);
-  const installQueueRef = useRef<string | null>(null);
+  const installQueueRef = useRef<{ archive: string; version: string } | null>(null);
 
   const reload = async (focus?: string) => {
     try {
@@ -74,21 +75,22 @@ export function VersionsScreen() {
   useEffect(() => {
     if (!pendingOp) return;
     if (pendingOp.status === "succeeded" && pendingOp.kind === "download" && installQueueRef.current) {
-      const archive = installQueueRef.current;
+      const job = installQueueRef.current;
       installQueueRef.current = null;
       setPendingOpId(null);
       void (async () => {
+        setInstallingVersion(job.version);
+        const t = toast.loading("Устанавливаю версию…", { description: `zapret ${job.version}` });
         try {
-          const version = pendingOp.message.match(/(\d+\.\d+\.\d+)/)?.[1];
-          if (!archive || !version) return;
-          const t = toast.loading("Устанавливаю версию…", { description: `zapret ${version}` });
-          const result = await api.versionsInstall(version, archive);
+          const result = await api.versionsInstall(job.version, job.archive);
           setPendingVersion(null);
           await reload(result.folder);
-          toast.success("Версия установлена", { id: t, description: `zapret ${version}` });
+          toast.success("Версия установлена", { id: t, description: `zapret ${job.version}` });
         } catch (e) {
           setPendingVersion(null);
-          toast.error("Установка не удалась", { description: errorText(e) });
+          toast.error("Установка не удалась", { id: t, description: errorText(e) });
+        } finally {
+          setInstallingVersion(null);
         }
       })();
     }
@@ -99,6 +101,12 @@ export function VersionsScreen() {
       toast.error("Скачивание не удалось", {
         description: pendingOp.error?.userMessage ?? pendingOp.message,
       });
+    }
+    if (pendingOp.status === "cancelled" && pendingOp.kind === "download") {
+      installQueueRef.current = null;
+      setPendingOpId(null);
+      setPendingVersion(null);
+      toast.info("Скачивание отменено");
     }
   }, [pendingOp?.status, pendingOp?.id]);
 
@@ -132,13 +140,17 @@ export function VersionsScreen() {
 
   const download = async (release: ReleaseInfo) => {
     if (!release.assetUrl || !release.assetName) {
-      toast.warning("У релиза нет доступного файла");
+      toast.warning("У релиза нет архива .zip или .tar.gz");
+      return;
+    }
+    if (installingVersion !== null) {
+      toast.info("Дождитесь завершения установки");
       return;
     }
     setPendingVersion(release.version);
     try {
       const res = await api.versionsDownload(release.version, release.assetUrl, release.assetName);
-      installQueueRef.current = res.archivePath;
+      installQueueRef.current = { archive: res.archivePath, version: release.version };
       setPendingOpId(res.operationId);
     } catch (e) {
       setPendingVersion(null);
@@ -169,6 +181,7 @@ export function VersionsScreen() {
     pendingOp?.progress?.total != null && pendingOp.progress.current != null
       ? Math.min(100, (pendingOp.progress.current * 100) / pendingOp.progress.total)
       : undefined;
+  const installedByVersion = new Map((installed ?? []).map((item) => [item.version, item]));
 
   return (
     <Page>
@@ -208,6 +221,15 @@ export function VersionsScreen() {
               {Math.round(pendingOp.progress.total / 1_048_576)} МБ
             </p>
           )}
+        </section>
+      )}
+
+      {installingVersion && !downloading && (
+        <section className="material enter-soft flex items-center gap-2 rounded-[10px] px-5 py-4">
+          <span className="size-3.5 shrink-0 animate-spin rounded-full border-[1.5px] border-current border-t-transparent" />
+          <span className="min-w-0 truncate text-[13px] font-medium">
+            Устанавливаю zapret {installingVersion}…
+          </span>
         </section>
       )}
 
@@ -341,35 +363,82 @@ export function VersionsScreen() {
         {!availableLoading &&
           available?.map((release) => {
             const isPending = pendingVersion === release.version;
+            const isInstalling = installingVersion === release.version;
+            const installedItem = installedByVersion.get(release.version);
+            const isInstalled = installedItem !== undefined;
+            const noAsset = !release.assetUrl || !release.assetName;
             return (
               <div
                 key={release.version}
                 className="row enter-rise items-center gap-2.5"
+                data-selected={installedItem?.selected ? "true" : undefined}
               >
-                <span className="grid size-9 shrink-0 place-items-center rounded-[8px] bg-[var(--fill)] text-muted-foreground">
-                  <Icon name="download-minimalistic-bold" size={16} />
+                <span
+                  className={cn(
+                    "grid size-9 shrink-0 place-items-center rounded-[8px]",
+                    isInstalled
+                      ? "bg-[var(--accent)] text-[var(--accent-foreground)]"
+                      : "bg-[var(--fill)] text-muted-foreground",
+                  )}
+                >
+                  <Icon
+                    name={isInstalled ? "check-circle-bold" : "download-minimalistic-bold"}
+                    size={16}
+                  />
                 </span>
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate font-mono text-[13px] font-medium">
-                    v{release.version}
+                  <span className="flex items-center gap-2">
+                    <span className="truncate font-mono text-[13px] font-medium">
+                      v{release.version}
+                    </span>
+                    {isInstalled && (
+                      <span className="text-[11px] font-medium uppercase tracking-[0.04em] text-success">
+                        {installedItem.selected ? "активная" : "установлена"}
+                      </span>
+                    )}
                   </span>
                   <span className="text-caption mt-1 block truncate text-muted-foreground">
-                    {releaseNotes(release)}
+                    {noAsset ? "В релизе нет поддерживаемого архива" : releaseNotes(release)}
                   </span>
                 </span>
-                <Button
-                  size="sm"
-                  className="shrink-0 gap-1.5"
-                  disabled={isPending || downloading}
-                  onClick={() => void download(release)}
-                >
-                  {isPending ? (
-                    <span className="size-3.5 animate-spin rounded-full border-[1.5px] border-current border-t-transparent" />
-                  ) : (
-                    <Icon name="download-minimalistic-bold" size={13} />
-                  )}
-                  {isPending ? "Скачиваю…" : "Скачать"}
-                </Button>
+                {isInstalled ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="shrink-0 gap-1.5"
+                    disabled
+                    aria-label={`Версия ${release.version} уже установлена`}
+                  >
+                    <Icon name="check-circle-bold" size={13} />
+                    Установлено
+                  </Button>
+                ) : (
+                  <Button
+                    size="sm"
+                    className="shrink-0 gap-1.5"
+                    disabled={
+                      isPending ||
+                      isInstalling ||
+                      downloading ||
+                      installingVersion !== null ||
+                      noAsset
+                    }
+                    onClick={() => void download(release)}
+                  >
+                    {isPending || isInstalling ? (
+                      <span className="size-3.5 animate-spin rounded-full border-[1.5px] border-current border-t-transparent" />
+                    ) : (
+                      <Icon name="download-minimalistic-bold" size={13} />
+                    )}
+                    {isInstalling
+                      ? "Устанавливаю…"
+                      : isPending
+                        ? "Скачиваю…"
+                        : noAsset
+                          ? "Нет архива"
+                          : "Скачать"}
+                  </Button>
+                )}
               </div>
             );
           })}

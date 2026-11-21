@@ -934,17 +934,18 @@ pub async fn tgws_install(
 
     let handle = state
         .operations
-        .begin("tgws_install", Some("tgws"), false)
+        .begin("tgws_install", Some("tgws"), true)
         .await?;
     let done = StdArc::new(AtomicU64::new(0));
     let total = StdArc::new(AtomicU64::new(0));
     let (done_tx, total_tx) = (done.clone(), total.clone());
+    let cancel = handle.cancel.clone();
     let download = tokio::task::spawn_blocking(move || {
         let progress = |d: u64, t: u64| {
             done_tx.store(d, Ordering::Relaxed);
             total_tx.store(t, Ordering::Relaxed);
         };
-        crate::services::tgws::install_blocking(&progress)
+        crate::services::tgws::install_blocking(&progress, &cancel)
     });
 
     let snapshot_rx = handle.snapshot.clone();
@@ -954,7 +955,7 @@ pub async fn tgws_install(
             tokio::time::sleep(std::time::Duration::from_millis(250)).await;
             let d = done.load(Ordering::Relaxed);
             let t = total.load(Ordering::Relaxed);
-            if d > 0 && t > 0 {
+            if d > 0 {
                 let mut snap = snapshot_rx.borrow().clone();
                 if snap.status.is_terminal() {
                     break;
@@ -963,12 +964,16 @@ pub async fn tgws_install(
                 snap.status = OperationStatus::Running;
                 snap.progress = Some(crate::services::operations::Progress {
                     current: Some(d),
-                    total: Some(t),
-                    message: Some(format!(
-                        "Скачивание TG WS Proxy: {} из {} МБ",
-                        d / 1_048_576,
-                        t / 1_048_576
-                    )),
+                    total: (t > 0).then_some(t),
+                    message: Some(if t > 0 {
+                        format!(
+                            "Скачивание TG WS Proxy: {} из {} МБ",
+                            d / 1_048_576,
+                            t / 1_048_576
+                        )
+                    } else {
+                        format!("Скачивание TG WS Proxy: {} МБ", d / 1_048_576)
+                    }),
                 });
                 operations.update(snap).await;
             }

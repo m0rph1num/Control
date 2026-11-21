@@ -224,7 +224,10 @@ fn latest_asset_url() -> (String, String) {
     (tag, url)
 }
 
-pub fn install_blocking(on_progress: &dyn Fn(u64, u64)) -> Result<InstallResult, AppError> {
+pub fn install_blocking(
+    on_progress: &dyn Fn(u64, u64),
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<InstallResult, AppError> {
     let dir = install_dir()?;
     let target = dir.join(EXE_NAME);
     let (version, url) = latest_asset_url();
@@ -256,7 +259,13 @@ pub fn install_blocking(on_progress: &dyn Fn(u64, u64)) -> Result<InstallResult,
     let mut downloaded = 0u64;
     let mut buf = [0u8; 65536];
     loop {
+        if cancel.is_cancelled() {
+            drop(file);
+            let _ = std::fs::remove_file(&part);
+            return Err(AppError::new("CANCELLED", "Загрузка отменена"));
+        }
         let n = reader.read(&mut buf).map_err(|e| {
+            let _ = std::fs::remove_file(&part);
             AppError::new("NETWORK_ERROR", "Соединение прервано при загрузке")
                 .with_details(serde_json::json!({ "error": e.to_string() }))
         })?;
@@ -264,6 +273,7 @@ pub fn install_blocking(on_progress: &dyn Fn(u64, u64)) -> Result<InstallResult,
             break;
         }
         file.write_all(&buf[..n]).map_err(|e| {
+            let _ = std::fs::remove_file(&part);
             AppError::new("IO_ERROR", "Ошибка записи при загрузке")
                 .with_details(serde_json::json!({ "error": e.to_string() }))
         })?;
@@ -281,6 +291,18 @@ pub fn install_blocking(on_progress: &dyn Fn(u64, u64)) -> Result<InstallResult,
             format!("Загружено {downloaded} из {total} байт"),
         ));
     }
+    let mut magic = [0u8; 2];
+    let magic_ok = std::fs::File::open(&part)
+        .and_then(|mut f| std::io::Read::read_exact(&mut f, &mut magic))
+        .is_ok()
+        && magic == *b"MZ";
+    if !magic_ok {
+        let _ = std::fs::remove_file(&part);
+        return Err(AppError::new(
+            "INVALID_DOWNLOAD",
+            "GitHub вернул не исполняемый файл. Повторите загрузку позже",
+        ));
+    }
 
     let _ = std::fs::remove_file(&target);
     std::fs::rename(&part, &target).map_err(|e| {
@@ -293,6 +315,17 @@ pub fn install_blocking(on_progress: &dyn Fn(u64, u64)) -> Result<InstallResult,
         path: target.to_string_lossy().into_owned(),
         size: downloaded,
     })
+}
+
+pub fn autostart_enabled() -> bool {
+    crate::storage::settings::read_settings_raw()
+        .ok()
+        .and_then(|s| s.get("tgwsAutostart").and_then(|v| v.as_bool()))
+        .unwrap_or(false)
+}
+
+pub fn autostart_ready() -> bool {
+    autostart_enabled() && exe_path().map(|p| p.is_file()).unwrap_or(false)
 }
 
 pub async fn start() -> Result<TgwsStatus, AppError> {

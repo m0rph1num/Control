@@ -978,6 +978,7 @@ function ProfileEditor({
               value={draft.gameFilter}
               options={GAME_OPTIONS}
               onChange={(value) => patch({ gameFilter: value })}
+              className="w-full"
             />
           </div>
           <div className="flex flex-col gap-1.5">
@@ -986,6 +987,7 @@ function ProfileEditor({
               value={draft.ipset}
               options={IPSET_OPTIONS}
               onChange={(value) => patch({ ipset: value })}
+              className="w-full"
             />
           </div>
         </div>

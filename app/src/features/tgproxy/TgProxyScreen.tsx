@@ -2,10 +2,12 @@ import { errorText } from "@/shared/error";
 import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
 import { toast } from "sonner";
 import { api, type TgwsStatus } from "@/shared/api";
+import { useOperations } from "@/shared/operations";
 import { Page, PageHeader, SectionCard, FieldLabel } from "@/shared/ui/screen";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
+import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Icon } from "@/shared/ui/Icon";
 import { copyText } from "@/shared/clipboard";
@@ -18,6 +20,14 @@ export function TgProxyScreen() {
   const [port, setPort] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [confirmUninstall, setConfirmUninstall] = useState(false);
+  const operations = useOperations();
+  const installOp = operations.find(
+    (op) => op.kind === "tgws_install" && (op.status === "running" || op.status === "queued"),
+  );
+  const installPct =
+    installOp?.progress?.total != null && installOp.progress.current != null
+      ? Math.min(100, (installOp.progress.current * 100) / installOp.progress.total)
+      : undefined;
 
   const refresh = useCallback(async () => {
     try {
@@ -296,6 +306,37 @@ export function TgProxyScreen() {
               </Button>
             )}
           </div>
+
+          {busy === "install" && (
+            <div className="mt-5 max-w-[34rem] rounded-[9px] border border-[var(--surface-stroke)] bg-[var(--surface-muted)] p-3">
+              <div className="flex items-center justify-between gap-3">
+                <span className="flex min-w-0 items-center gap-2 text-[12.5px]">
+                  <span className="size-3.5 shrink-0 animate-spin rounded-full border-[1.5px] border-current border-t-transparent" />
+                  <span className="min-w-0 truncate">
+                    {installOp?.progress?.message ?? "Готовлю загрузку…"}
+                  </span>
+                </span>
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  className="shrink-0 text-destructive"
+                  disabled={!installOp}
+                  onClick={() => installOp && void api.operationsCancel(installOp.id)}
+                >
+                  Отменить
+                </Button>
+              </div>
+              <Progress value={installPct ?? 0} className="mt-2.5" />
+              {installOp?.progress?.current != null && (
+                <p className="mt-1.5 font-mono text-[11px] text-muted-foreground">
+                  {Math.round(installOp.progress.current / 1_048_576)}
+                  {installOp.progress.total != null
+                    ? ` / ${Math.round(installOp.progress.total / 1_048_576)} МБ`
+                    : " МБ"}
+                </p>
+              )}
+            </div>
+          )}
         </div>
       </section>
 

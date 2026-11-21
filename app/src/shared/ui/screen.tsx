@@ -147,9 +147,9 @@ export function Segmented<T extends string>({
             className="segmented-item relative flex-1"
           >
             {active && <span className="segmented-thumb" />}
-            <span className="relative z-10 flex items-center gap-1.5">
+            <span className="relative z-10 flex min-w-0 items-center gap-1.5">
               {option.icon}
-              {option.label}
+              <span className="truncate">{option.label}</span>
             </span>
           </button>
         );
@@ -166,9 +166,11 @@ export function FieldLabel({
   hint?: string | undefined;
 }) {
   return (
-    <div className="flex items-baseline justify-between gap-3">
-      <span className="text-[13px] font-medium text-foreground">{children}</span>
-      {hint && <span className="text-[11px] text-muted-foreground">{hint}</span>}
+    <div className="flex min-w-0 items-baseline justify-between gap-3">
+      <span className="min-w-0 truncate text-[13px] font-medium text-foreground">{children}</span>
+      {hint && (
+        <span className="shrink-0 whitespace-nowrap text-[11px] text-muted-foreground">{hint}</span>
+      )}
     </div>
   );
 }

@@ -11,8 +11,20 @@ const OUTPUT_TAIL: usize = 300;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let exit = run(&args);
-    std::process::exit(exit);
+    let report_path = args.get(1).cloned();
+    let outcome = std::panic::catch_unwind(|| run(&args));
+    match outcome {
+        Ok(exit) => std::process::exit(exit),
+        Err(_) => {
+            if let Some(path) = report_path {
+                write_report(
+                    Path::new(&path),
+                    &json!({ "ok": false, "error": "HELPER_PANIC", "steps": [] }),
+                );
+            }
+            std::process::exit(4);
+        }
+    }
 }
 
 fn run(args: &[String]) -> i32 {
@@ -76,13 +88,15 @@ fn run(args: &[String]) -> i32 {
 }
 
 fn is_admin_process() -> bool {
-    let out = Command::new("net")
-        .arg("session")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .creation_flags(CREATE_NO_WINDOW)
-        .status();
-    matches!(out, Ok(status) if status.success())
+    #[cfg(windows)]
+    {
+        use windows::Win32::UI::Shell::IsUserAnAdmin;
+        unsafe { IsUserAnAdmin().as_bool() }
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
 }
 
 fn execute_step(step: &Value) -> Value {
@@ -233,6 +247,19 @@ fn run_command(cmd: &mut Command) -> Result<(i32, String), (String, String)> {
 }
 
 fn write_report(path: &Path, report: &Value) {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let tmp = path.with_extension("report.tmp");
+    if let Ok(mut file) = std::fs::File::create(&tmp) {
+        let written = serde_json::to_writer_pretty(&mut file, report).is_ok();
+        let flushed = file.flush().is_ok();
+        drop(file);
+        if written && flushed && std::fs::rename(&tmp, path).is_ok() {
+            return;
+        }
+        let _ = std::fs::remove_file(&tmp);
+    }
     if let Ok(mut file) = std::fs::File::create(path) {
         let _ = serde_json::to_writer_pretty(&mut file, report);
         let _ = file.flush();

@@ -77,6 +77,18 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 let _ = app_state.zapret.refresh().await;
             });
+
+            if services::tgws::autostart_ready() {
+                tauri::async_runtime::spawn(async move {
+                    if let Err(error) = services::tgws::start().await {
+                        tracing::warn!(
+                            code = %error.code,
+                            message = %error.user_message,
+                            "не удалось автозапустить TG WS Proxy"
+                        );
+                    }
+                });
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

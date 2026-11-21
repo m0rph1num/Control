@@ -79,6 +79,31 @@ pub struct ReleaseInfo {
     pub notes: Option<String>,
 }
 
+fn select_asset(release: &serde_json::Value) -> Option<(String, String)> {
+    let assets = release["assets"].as_array()?;
+    let mut best: Option<(u8, String, String)> = None;
+    for asset in assets {
+        let Some(name) = asset["name"].as_str() else {
+            continue;
+        };
+        let Some(url) = asset["browser_download_url"].as_str() else {
+            continue;
+        };
+        let lower = name.to_lowercase();
+        let rank = if lower.ends_with(".zip") {
+            0
+        } else if lower.ends_with(".tar.gz") {
+            1
+        } else {
+            continue;
+        };
+        if best.as_ref().is_none_or(|(current, _, _)| rank < *current) {
+            best = Some((rank, name.to_string(), url.to_string()));
+        }
+    }
+    best.map(|(_, name, url)| (name, url))
+}
+
 pub fn fetch_releases_blocking(repo: &str) -> Result<Vec<ReleaseInfo>, AppError> {
     let url = format!("https://api.github.com/repos/{repo}/releases?per_page=20");
     let resp = ureq::get(&url)
@@ -103,12 +128,8 @@ pub fn fetch_releases_blocking(repo: &str) -> Result<Vec<ReleaseInfo>, AppError>
             continue;
         }
         let version = tag.trim_start_matches('v').to_string();
-        let asset = rel["assets"].as_array().and_then(|a| a.first()).cloned();
-        let (asset_name, asset_url) = match asset {
-            Some(a) => (
-                a["name"].as_str().map(str::to_string),
-                a["browser_download_url"].as_str().map(str::to_string),
-            ),
+        let (asset_name, asset_url) = match select_asset(rel) {
+            Some((name, url)) => (Some(name), Some(url)),
             None => (None, None),
         };
         releases.push(ReleaseInfo {
@@ -133,18 +154,58 @@ pub fn temp_download_path(version: &str, asset_name: &str) -> Result<PathBuf, Ap
         AppError::new("IO_ERROR", "Не удалось создать папку загрузок")
             .with_details(serde_json::json!({ "error": e.to_string() }))
     })?;
-    let ext = archive_ext(asset_name);
+    let ext = archive_ext(asset_name)?;
     Ok(dir.join(format!("zapret-{version}{ext}")))
 }
 
-fn archive_ext(asset_name: &str) -> String {
+fn archive_ext(asset_name: &str) -> Result<String, AppError> {
     let lower = asset_name.to_lowercase();
     if lower.ends_with(".tar.gz") {
-        ".tar.gz".into()
-    } else if let Some(dot) = lower.rfind('.') {
-        lower[dot..].chars().take(7).collect()
+        Ok(".tar.gz".into())
+    } else if lower.ends_with(".zip") {
+        Ok(".zip".into())
     } else {
-        ".zip".into()
+        Err(AppError::new(
+            "UNSUPPORTED_ARCHIVE",
+            "У этого релиза нет архива .zip или .tar.gz",
+        )
+        .with_details(serde_json::json!({ "asset": asset_name })))
+    }
+}
+
+enum ArchiveKind {
+    Zip,
+    TarGz,
+}
+
+fn detect_archive(archive: &Path) -> Result<ArchiveKind, AppError> {
+    use std::io::Read;
+    let mut head = [0u8; 4];
+    let read = std::fs::File::open(archive)
+        .and_then(|mut file| file.read(&mut head))
+        .unwrap_or(0);
+    if read >= 4 && head[..4] == [0x50, 0x4b, 0x03, 0x04] {
+        return Ok(ArchiveKind::Zip);
+    }
+    if read >= 2 && head[..2] == [0x1f, 0x8b] {
+        return Ok(ArchiveKind::TarGz);
+    }
+    if read >= 4 && &head[..4] == b"Rar!" {
+        return Err(AppError::new(
+            "UNSUPPORTED_ARCHIVE",
+            "GitHub отдал RAR-архив, а он не поддерживается. Обновите список версий",
+        ));
+    }
+    let name = archive.to_string_lossy().to_lowercase();
+    if name.ends_with(".zip") {
+        Ok(ArchiveKind::Zip)
+    } else if name.ends_with(".tar.gz") {
+        Ok(ArchiveKind::TarGz)
+    } else {
+        Err(AppError::new(
+            "UNSUPPORTED_ARCHIVE",
+            "Файл не похож на .zip или .tar.gz. Скачайте версию заново",
+        ))
     }
 }
 
@@ -159,6 +220,12 @@ pub fn download_blocking(
             "INVALID_ARGUMENT",
             "Разрешены только https-ссылки",
         ));
+    }
+    if let Ok(meta) = std::fs::metadata(dest) {
+        if meta.len() > 0 && detect_archive(dest).is_ok() {
+            on_progress(meta.len(), meta.len());
+            return Ok(());
+        }
     }
     let resp = ureq::get(url)
         .set("User-Agent", "Control-App")
@@ -281,16 +348,9 @@ fn extract_and_finalize(
     ver_dir: &Path,
     staging: &Path,
 ) -> Result<(), AppError> {
-    let name = archive.to_string_lossy().to_lowercase();
-    let extracted = if name.ends_with(".zip") {
-        extract_zip_via_powershell(archive, staging)?
-    } else if name.ends_with(".tar.gz") {
-        extract_tar_gz(archive, staging)?
-    } else {
-        return Err(AppError::new(
-            "UNSUPPORTED_ARCHIVE",
-            "Формат архива не поддерживается (ожидались .zip или .tar.gz)",
-        ));
+    let extracted = match detect_archive(archive)? {
+        ArchiveKind::Zip => extract_zip_via_powershell(archive, staging)?,
+        ArchiveKind::TarGz => extract_tar_gz(archive, staging)?,
     };
     if !extracted {
         return Err(AppError::new("EXTRACT_EMPTY", "Архив пуст или повреждён"));
@@ -548,9 +608,34 @@ mod tests {
 
     #[test]
     fn archive_ext_detection() {
-        assert_eq!(archive_ext("zapret-1.10.0.tar.gz"), ".tar.gz");
-        assert_eq!(archive_ext("zapret-1.10.0.zip"), ".zip");
-        assert_eq!(archive_ext("noext"), ".zip");
+        assert_eq!(archive_ext("zapret-1.10.0.tar.gz").unwrap(), ".tar.gz");
+        assert_eq!(archive_ext("zapret-1.10.0.zip").unwrap(), ".zip");
+        assert_eq!(
+            archive_ext("zapret-1.10.0.rar").unwrap_err().code,
+            "UNSUPPORTED_ARCHIVE"
+        );
+    }
+
+    #[test]
+    fn selects_zip_asset_over_rar_and_tar_gz() {
+        let release = serde_json::json!({
+            "assets": [
+                { "name": "zapret.rar", "browser_download_url": "https://x/rar" },
+                { "name": "zapret.tar.gz", "browser_download_url": "https://x/tgz" },
+                { "name": "zapret.zip", "browser_download_url": "https://x/zip" }
+            ]
+        });
+        let (name, url) = select_asset(&release).unwrap();
+        assert_eq!(name, "zapret.zip");
+        assert_eq!(url, "https://x/zip");
+    }
+
+    #[test]
+    fn release_without_supported_asset_has_no_url() {
+        let release = serde_json::json!({
+            "assets": [{ "name": "zapret.rar", "browser_download_url": "https://x/rar" }]
+        });
+        assert!(select_asset(&release).is_none());
     }
 
     #[test]

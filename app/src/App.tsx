@@ -133,7 +133,8 @@ function ControlApp() {
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+      const isK = event.code === "KeyK" || event.key.toLowerCase() === "k";
+      if ((event.metaKey || event.ctrlKey) && isK) {
         event.preventDefault();
         setPaletteOpen((value) => !value);
       }
@@ -253,7 +254,7 @@ function ControlApp() {
                   className="ml-auto rounded-[6px] px-2 py-1 text-[11.5px] text-muted-foreground transition-colors hover:bg-[var(--sidebar-accent)] hover:text-foreground"
                   title="Что нового в Control"
                 >
-                  2.0.1
+                  2.0.2
                 </button>
               </>
             )}

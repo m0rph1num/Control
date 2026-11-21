@@ -1,7 +1,13 @@
 import { errorText } from "@/shared/error";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { api, type AppInfo, type AutostartInfo, type ServiceStatus } from "@/shared/api";
+import {
+  api,
+  type AppInfo,
+  type AutostartInfo,
+  type ServiceStatus,
+  type TgwsStatus,
+} from "@/shared/api";
 import { FieldLabel, Page, PageHeader, SectionCard, Segmented } from "@/shared/ui/screen";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -42,6 +48,8 @@ export function SettingsScreen() {
   const [service, setService] = useState<ServiceStatus | null>(null);
   const [serviceBusy, setServiceBusy] = useState<"install" | "remove" | null>(null);
   const [confirmService, setConfirmService] = useState<"install" | "remove" | null>(null);
+  const [tgws, setTgws] = useState<TgwsStatus | null>(null);
+  const [savingTgwsAutostart, setSavingTgwsAutostart] = useState(false);
   const [licensesOpen, setLicensesOpen] = useState(false);
   const [whatsNewOpen, setWhatsNewOpen] = useState(false);
   const [logoOk, setLogoOk] = useState(true);
@@ -66,6 +74,10 @@ export function SettingsScreen() {
       .serviceStatus()
       .then(setService)
       .catch(() => setService(null));
+    api
+      .tgwsStatus()
+      .then(setTgws)
+      .catch(() => setTgws(null));
   }, []);
 
   const patch = (key: string, value: boolean) => {
@@ -85,6 +97,10 @@ export function SettingsScreen() {
     setSavingAutostart(true);
     try {
       await api.autostartSet(enabled);
+      if (!enabled && settings?.tgwsAutostart === true) {
+        await api.settingsUpdate({ tgwsAutostart: false });
+        setSettings((cur) => ({ ...(cur ?? {}), tgwsAutostart: false }));
+      }
       const info = await api.autostartInfo();
       setAutostart(info);
       toast.success(enabled ? "Автозапуск Control включён" : "Автозапуск Control выключен", {
@@ -95,6 +111,44 @@ export function SettingsScreen() {
       toast.error("Не удалось изменить автозапуск Control", { description: errorText(e) });
     } finally {
       setSavingAutostart(false);
+    }
+  };
+
+  const toggleTgwsAutostart = async (enabled: boolean) => {
+    if (enabled && !tgws?.installed) {
+      toast.warning("Сначала установите TG WS Proxy на вкладке TG Proxy");
+      return;
+    }
+    const prev = settings;
+    setSettings((cur) => ({ ...(cur ?? {}), tgwsAutostart: enabled }));
+    setSavingTgwsAutostart(true);
+    try {
+      await api.settingsUpdate({ tgwsAutostart: enabled });
+      if (enabled) {
+        if (autostart && !autostart.enabled) {
+          await api.autostartSet(true);
+          setAutostart(await api.autostartInfo());
+        }
+        if (tgws && !tgws.running) {
+          try {
+            setTgws(await api.tgwsStart());
+          } catch (e) {
+            toast.error("Прокси не запустился", { description: errorText(e) });
+          }
+        }
+        toast.success("Автозапуск TG WS Proxy включён", {
+          description: "Control запускается в трее и поднимает прокси в фоне",
+        });
+      } else {
+        toast.success("Автозапуск TG WS Proxy выключен", {
+          description: "Запущенный прокси продолжит работать до перезагрузки",
+        });
+      }
+    } catch (e) {
+      setSettings(prev);
+      toast.error("Не удалось изменить автозапуск TG WS Proxy", { description: errorText(e) });
+    } finally {
+      setSavingTgwsAutostart(false);
     }
   };
 
@@ -206,7 +260,7 @@ export function SettingsScreen() {
       <SectionCard
         title="Запуск с Windows"
         action={
-          <span className="text-[11px] text-muted-foreground">два независимых автозапуска</span>
+          <span className="text-[11px] text-muted-foreground">Control, zapret и TG WS Proxy</span>
         }
       >
         <div className="flex flex-col">
@@ -308,9 +362,63 @@ export function SettingsScreen() {
             )}
           </div>
 
+          <div className="flex items-start justify-between gap-6 border-t border-[var(--separator)] py-4">
+            <div className="flex min-w-0 items-start gap-3.5">
+              <span className="grid size-9 shrink-0 place-items-center rounded-[9px] bg-[var(--fill)] text-foreground">
+                <Icon name="widget-4-bold" size={16} />
+              </span>
+              <div className="min-w-0">
+                <p className="text-[13px] font-medium leading-[1.4]">TG WS Proxy</p>
+                <p className="text-caption mt-1 leading-relaxed text-muted-foreground">
+                  Control поднимает прокси в фоне после входа в Windows
+                </p>
+                {tgws === null ? (
+                  <Skeleton className="mt-2.5 h-3.5 w-24" />
+                ) : (
+                  <span
+                    key={`${tgws.installed}-${tgws.running}-${settings?.tgwsAutostart === true}`}
+                    className="enter-soft mt-2.5 flex items-center gap-1.5 text-[11px] font-medium"
+                  >
+                    <span
+                      className={cn(
+                        "size-1.5 rounded-full",
+                        !tgws.installed
+                          ? "bg-muted-foreground/50"
+                          : settings?.tgwsAutostart === true
+                            ? tgws.running
+                              ? "bg-success"
+                              : "bg-warning"
+                            : "bg-muted-foreground/50",
+                      )}
+                    />
+                    {!tgws.installed
+                      ? "не установлен"
+                      : settings?.tgwsAutostart !== true
+                        ? "выключен"
+                        : tgws.running
+                          ? "включён · прокси работает"
+                          : "включён · запустится с Control"}
+                  </span>
+                )}
+              </div>
+            </div>
+            {tgws === null ? (
+              <Skeleton className="mt-1 h-5 w-9 shrink-0 rounded-full" />
+            ) : (
+              <Switch
+                checked={settings?.tgwsAutostart === true}
+                disabled={savingTgwsAutostart || !tgws.installed}
+                onCheckedChange={(value) => void toggleTgwsAutostart(value)}
+                className="mt-1 shrink-0"
+                aria-label="Автозапуск TG WS Proxy вместе с Control"
+              />
+            )}
+          </div>
+
           <p className="text-caption border-t border-[var(--separator)] pt-4 leading-relaxed text-muted-foreground">
-            Автозапуски не зависят друг от друга: можно включить только Control, только zapret или
-            оба. Служба zapret требует подтверждения UAC.
+            Control и zapret включаются независимо: можно оставить только один. Служба zapret
+            требует подтверждения UAC. TG WS Proxy работает только вместе с Control — при
+            включении его автозапуск Control активируется автоматически.
           </p>
         </div>
       </SectionCard>
@@ -347,7 +455,7 @@ export function SettingsScreen() {
                   className="group/version inline-flex items-center gap-1 rounded-[5px] bg-[var(--fill)] px-1.5 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-[var(--fill-strong)] hover:text-foreground"
                   title="Что нового в Control"
                 >
-                  {appInfo?.version ?? "2.0.1"}
+                  {appInfo?.version ?? "2.0.2"}
                   <Icon
                     name="alt-arrow-right-bold"
                     size={10}
