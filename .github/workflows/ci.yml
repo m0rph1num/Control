@@ -34,13 +34,16 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # tauri-build requires the external binary listed in tauri.conf.json.
+      - run: node app/scripts/copy-helper.mjs
       - run: cargo fmt --check
         working-directory: src-tauri
       - run: cargo clippy -- -D warnings
         working-directory: src-tauri
-      - run: cargo test
+      - run: cargo test --lib
         working-directory: src-tauri
-      # Полная сборка tauri (с frontendDist) — на Этапе 8 / релизных пайплайнах;
-      # здесь достаточно lib-сборки, чтобы не требовать артефактов фронтенда.
       - run: cargo check --lib
         working-directory: src-tauri
