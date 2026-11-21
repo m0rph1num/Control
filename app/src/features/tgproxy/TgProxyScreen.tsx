@@ -12,12 +12,16 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Icon } from "@/shared/ui/Icon";
 import { copyText } from "@/shared/clipboard";
 import { cn } from "cn";
+import { cacheTgwsStatus, cachedTgwsStatus } from "@/shared/status-cache";
 
 export function TgProxyScreen() {
-  const [status, setStatus] = useState<TgwsStatus | null>(null);
+  const [status, setStatus] = useState<TgwsStatus | null>(cachedTgwsStatus);
   const [logs, setLogs] = useState<string[] | null>(null);
   const [logsOpen, setLogsOpen] = useState(false);
-  const [port, setPort] = useState("");
+  const [port, setPort] = useState(() => {
+    const cached = cachedTgwsStatus();
+    return cached ? String(cached.port) : "";
+  });
   const [busy, setBusy] = useState<string | null>(null);
   const [confirmUninstall, setConfirmUninstall] = useState(false);
   const operations = useOperations();
@@ -33,6 +37,7 @@ export function TgProxyScreen() {
     try {
       const next = await api.tgwsStatus();
       setStatus(next);
+      cacheTgwsStatus(next);
       setPort(String(next.port));
     } catch (e) {
       toast.error("Не удалось получить состояние TG Proxy", { description: errorText(e) });
@@ -67,6 +72,7 @@ export function TgProxyScreen() {
     try {
       const next = await work();
       setStatus(next);
+      cacheTgwsStatus(next);
       setPort(String(next.port));
       toast.success(done, { id: t });
       await refreshLogs();
@@ -106,6 +112,7 @@ export function TgProxyScreen() {
     try {
       const next = await api.tgwsSetPort(value);
       setStatus(next);
+      cacheTgwsStatus(next);
       setPort(String(next.port));
       toast.success("Порт сохранён", {
         id: t,
@@ -232,15 +239,24 @@ export function TgProxyScreen() {
             {state.title}
           </h2>
           <p className="text-lede mt-2 max-w-[34rem] text-muted-foreground">
-            {state.tone === "success"
-              ? "Telegram подключается к локальному порту на этом компьютере."
-              : state.tone === "warning"
-                ? "Прокси установлен, но сейчас не запущен."
-                : "Скачайте сборку, чтобы подключать Telegram без Zapret."}
+            {status === null
+              ? "Проверяю установку и запущенные процессы…"
+              : state.tone === "success"
+                ? "Telegram подключается к локальному порту на этом компьютере."
+                : state.tone === "warning"
+                  ? "Прокси установлен, но сейчас не запущен."
+                  : "Скачайте сборку, чтобы подключать Telegram без Zapret."}
           </p>
 
           <div className="mt-6 flex flex-wrap items-center gap-2">
-            {!status?.installed && (
+            {status === null && (
+              <div className="flex h-9 items-center gap-2 text-[12.5px] text-muted-foreground">
+                <span className="size-3.5 animate-spin rounded-full border-[1.5px] border-current border-t-transparent" />
+                Проверяю состояние…
+              </div>
+            )}
+
+            {status && !status.installed && (
               <Button size="lg" className="gap-2" disabled={busy !== null} onClick={() => void install()}>
                 {busy === "install" ? (
                   <span className="size-3.5 animate-spin rounded-full border-[1.5px] border-current border-t-transparent" />
@@ -326,7 +342,7 @@ export function TgProxyScreen() {
                   Отменить
                 </Button>
               </div>
-              <Progress value={installPct ?? 0} className="mt-2.5" />
+              <Progress value={installPct} className="mt-2.5" />
               {installOp?.progress?.current != null && (
                 <p className="mt-1.5 font-mono text-[11px] text-muted-foreground">
                   {Math.round(installOp.progress.current / 1_048_576)}
@@ -340,7 +356,14 @@ export function TgProxyScreen() {
         </div>
       </section>
 
-      {status?.installed ? (
+      {status === null ? (
+        <SectionCard title="Состояние">
+          <div className="flex flex-col gap-2 py-1">
+            <Skeleton className="h-4 w-2/3" />
+            <Skeleton className="h-4 w-1/2" />
+          </div>
+        </SectionCard>
+      ) : status.installed ? (
         <SectionCard title="Подключение">
           <div className="flex flex-col gap-1.5">
             <FieldLabel hint="tg://">Ссылка для Telegram</FieldLabel>

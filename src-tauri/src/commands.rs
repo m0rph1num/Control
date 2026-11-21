@@ -189,12 +189,13 @@ pub async fn settings_update(
     state: State<'_, Arc<AppState>>,
     options: serde_json::Value,
 ) -> Result<(), AppError> {
-    const ALLOWED: [&str; 5] = [
+    const ALLOWED: [&str; 6] = [
         "minimizeToTray",
         "notifications",
         "restoreState",
         "controlDir",
         "lastStrategy",
+        "tgwsAutostart",
     ];
     let snapshot = crate::storage::settings::read_settings_recovering()?;
     let mut content = snapshot.content.clone();
@@ -412,7 +413,12 @@ pub async fn versions_download(
             }))
         }
         Err(e) => {
-            final_snapshot.status = OperationStatus::Failed;
+            let cancelled = e.code == "CANCELLED";
+            final_snapshot.status = if cancelled {
+                OperationStatus::Cancelled
+            } else {
+                OperationStatus::Failed
+            };
             final_snapshot.message = e.user_message.clone();
             final_snapshot.error = Some(crate::services::operations::OperationError {
                 code: e.code.clone(),
@@ -530,7 +536,7 @@ async fn run_service_elevation(
     state.operations.update(snapshot.clone()).await;
 
     let result = tokio::task::spawn_blocking(move || {
-        crate::services::elevation::run_elevated(&plan, std::time::Duration::from_secs(180))
+        crate::services::elevation::run_elevated(&plan, std::time::Duration::from_secs(240))
     })
     .await
     .map_err(|e| {
@@ -549,21 +555,14 @@ async fn run_service_elevation(
                 Ok(())
             }
             Ok(report) => {
+                let (message, details) = describe_elevation_failure(&report);
                 snapshot.status = OperationStatus::Failed;
-                snapshot.message = report
-                    .error
-                    .as_deref()
-                    .unwrap_or("Хотя бы один шаг не выполнен")
-                    .to_string();
+                snapshot.message = message.clone();
                 snapshot.error = Some(crate::services::operations::OperationError::new(
                     "ELEVATION_STEP_FAILED",
-                    "Сценарий с повышением выполнен с ошибками — детали в отчёте операции",
+                    message.clone(),
                 ));
-                Err(AppError::new(
-                    "ELEVATION_STEP_FAILED",
-                    "Сценарий с повышением выполнен с ошибками",
-                )
-                .with_details(serde_json::to_value(&report).unwrap_or_default()))
+                Err(AppError::new("ELEVATION_STEP_FAILED", message).with_details(details))
             }
             Err(e) => {
                 snapshot.status = OperationStatus::Failed;
@@ -581,17 +580,19 @@ async fn run_service_elevation(
     state.operations.finish(snapshot, Some("service")).await;
     outcome?;
 
-    let status = crate::services::service_query::query_service(
-        crate::services::zapret_service::ZAPRET_SERVICE_NAME,
-    )
-    .await?;
+    let name = crate::services::zapret_service::ZAPRET_SERVICE_NAME;
+    let status = if kind == "service_install" {
+        wait_service(name, true, std::time::Duration::from_secs(12)).await?
+    } else {
+        wait_service(name, false, std::time::Duration::from_secs(8)).await?
+    };
     if kind == "service_install" && (!status.installed || !status.running) {
         return Err(AppError::new(
             "SERVICE_NOT_RUNNING",
             if status.installed {
-                "Служба zapret создана, но не запустилась. Проверьте диагностику (WinDivert, конфликты стратегий)"
+                "Служба zapret создана, но не запустилась. Откройте диагностику: чаще всего мешает WinDivert или выбранная стратегия"
             } else {
-                "Служба zapret не создана"
+                "Служба zapret не создана. Проверьте, не блокирует ли установку антивирус, и повторите"
             },
         ));
     }
@@ -607,6 +608,102 @@ async fn run_service_elevation(
         );
     }
     Ok(serde_json::json!({ "installed": status.installed, "running": status.running }))
+}
+
+async fn wait_service(
+    name: &str,
+    expect_running: bool,
+    timeout: std::time::Duration,
+) -> Result<crate::services::service_query::ServiceStatus, AppError> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match crate::services::service_query::query_service(name).await {
+            Ok(status) => {
+                let done = if expect_running {
+                    status.installed && status.running
+                } else {
+                    !status.installed
+                };
+                if done || std::time::Instant::now() >= deadline {
+                    return Ok(status);
+                }
+            }
+            Err(error) => {
+                if std::time::Instant::now() >= deadline {
+                    return Err(error);
+                }
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+    }
+}
+
+fn describe_elevation_failure(
+    report: &crate::services::elevation::ElevationReport,
+) -> (String, serde_json::Value) {
+    let Some(step) = report.steps.iter().find(|step| !step.ok) else {
+        return (
+            "Сценарий с повышением привилегий завершился с ошибкой. Перезагрузите компьютер и повторите".into(),
+            serde_json::to_value(report).unwrap_or_default(),
+        );
+    };
+    let label = elevation_action_label(&step.action);
+    let hint = elevation_failure_hint(&step.action, step.exit_code, step.output_tail.as_deref());
+    let message = match step.exit_code {
+        Some(code) if !hint.is_empty() => {
+            format!("Не удалось выполнить: {label} (код {code}). {hint}")
+        }
+        Some(code) => format!("Не удалось выполнить: {label} (код {code})"),
+        None if !hint.is_empty() => format!("Не удалось выполнить: {label}. {hint}"),
+        None => format!("Не удалось выполнить: {label}"),
+    };
+    (message, serde_json::to_value(report).unwrap_or_default())
+}
+
+fn elevation_action_label(action: &str) -> &'static str {
+    match action {
+        "service_create" => "создание службы",
+        "service_start" => "запуск службы",
+        "service_stop" => "остановка службы",
+        "service_delete" => "удаление службы",
+        "reg_set" => "запись настройки в реестр",
+        "copy_if_absent" => "копирование драйвера",
+        "legacy_autostart_cleanup" => "очистка старого автозапуска",
+        _ => "шаг установки",
+    }
+}
+
+fn elevation_failure_hint(action: &str, code: Option<i32>, output: Option<&str>) -> String {
+    let known = match (action, code) {
+        ("service_create", Some(1075)) => {
+            "Служба ещё удаляется после прошлой попытки. Перезагрузите Windows и повторите"
+        }
+        ("service_create", Some(1073)) => {
+            "Служба с таким именем уже существует. Перезагрузите Windows и повторите"
+        }
+        ("service_create", Some(5)) => "Нет прав администратора — подтвердите запрос UAC",
+        ("service_start", Some(1060)) => "Служба не найдена: создание не выполнилось",
+        ("service_start", Some(1067)) => {
+            "Служба завершилась с ошибкой. Проверьте WinDivert и выбранную стратегию"
+        }
+        ("service_start", Some(2)) => {
+            "Система не смогла запустить winws.exe. Проверьте путь к файлу и антивирус"
+        }
+        ("reg_set", Some(5)) => "Нет доступа к реестру — подтвердите запрос UAC",
+        ("copy_if_absent", _) => {
+            "Проверьте, что антивирус не блокирует запись драйвера в System32\\drivers"
+        }
+        _ => "",
+    };
+    if !known.is_empty() {
+        return known.to_string();
+    }
+    let tail = output.unwrap_or_default().trim();
+    if tail.is_empty() {
+        "Попробуйте перезагрузить компьютер и повторить".to_string()
+    } else {
+        tail.chars().take(180).collect()
+    }
 }
 
 #[tauri::command]
@@ -995,7 +1092,11 @@ pub async fn tgws_install(
             Ok(info)
         }
         Err(e) => {
-            snapshot.status = OperationStatus::Failed;
+            snapshot.status = if e.code == "CANCELLED" {
+                OperationStatus::Cancelled
+            } else {
+                OperationStatus::Failed
+            };
             snapshot.message = e.user_message.clone();
             snapshot.error = Some(crate::services::operations::OperationError {
                 code: e.code.clone(),

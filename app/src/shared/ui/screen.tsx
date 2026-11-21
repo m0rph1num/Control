@@ -2,7 +2,7 @@ import { cn } from "cn";
 import { Icon, type IconName } from "@/shared/ui/Icon";
 
 export function Page({ children, className }: { children: React.ReactNode; className?: string }) {
-  return <div className={cn("flex flex-col gap-7", className)}>{children}</div>;
+  return <div className={cn("page-enter flex flex-col gap-7", className)}>{children}</div>;
 }
 
 export function PageHeader({

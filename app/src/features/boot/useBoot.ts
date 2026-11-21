@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "@/shared/api";
+import { cacheTgwsStatus } from "@/shared/status-cache";
 
 export type BootPhase = "booting" | "leaving" | "ready";
 export type BootStatus = "pending" | "running" | "done" | "error";
@@ -15,6 +16,7 @@ const STEPS: { id: string; label: string }[] = [
   { id: "settings", label: "Чтение настроек" },
   { id: "versions", label: "Поиск установок Zapret" },
   { id: "service", label: "Проверка службы и защиты" },
+  { id: "tgws", label: "Проверка TG WS Proxy" },
   { id: "autostart", label: "Проверка автозапуска" },
 ];
 
@@ -82,6 +84,8 @@ export function useBoot(): BootState {
             await api.versionsList();
           } else if (step.id === "service") {
             await Promise.all([api.serviceStatus(), api.protectionSnapshot()]);
+          } else if (step.id === "tgws") {
+            cacheTgwsStatus(await api.tgwsStatus());
           } else if (step.id === "autostart") {
             await api.autostartInfo();
           }

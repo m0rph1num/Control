@@ -1,5 +1,5 @@
 import { errorText } from "@/shared/error";
-import { useEffect, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { toast } from "sonner";
 import { api, onProtectionState, type ProtectionSnapshot, type StrategyInfo } from "@/shared/api";
 import { Button } from "@/components/ui/button";
@@ -35,14 +35,31 @@ export function ProtectionScreen() {
   const [snap, setSnap] = useState<ProtectionSnapshot | null>(null);
   const [strategies, setStrategies] = useState<StrategyInfo[]>([]);
   const [selected, setSelected] = useState<string>("");
-  const [busy, setBusy] = useState(false);
+  const [pending, setPending] = useState<"start" | "stop" | null>(null);
   const [applying, setApplying] = useState<string | null>(null);
+  const pendingToast = useRef<string | number | null>(null);
+
+  const applySnapshot = (snapshot: ProtectionSnapshot) => {
+    setSnap((current) =>
+      current && snapshot.revision < current.revision ? current : snapshot,
+    );
+  };
+
+  const sync = async () => {
+    try {
+      applySnapshot(await api.protectionSnapshot());
+    } catch {
+      return;
+    }
+  };
 
   useEffect(() => {
     let alive = true;
-    void api.protectionSnapshot().then((snapshot) => {
-      if (alive) setSnap(snapshot);
-    });
+    const apply = (snapshot: ProtectionSnapshot) => {
+      if (alive) applySnapshot(snapshot);
+    };
+    const unsubscribe = onProtectionState(apply);
+    void api.protectionSnapshot().then(apply).catch(() => undefined);
     void api.strategiesList().then((list) => {
       if (alive) setStrategies(list);
     });
@@ -54,13 +71,15 @@ export function ProtectionScreen() {
         setSelected((current) => current || saved);
       })
       .catch(() => undefined);
-    const unsubscribe = onProtectionState((snapshot) => {
-      if (alive) setSnap(snapshot);
-    });
     return () => {
       alive = false;
       void unsubscribe.then((fn) => fn());
     };
+  }, []);
+
+  useEffect(() => {
+    window.addEventListener("focus", sync);
+    return () => window.removeEventListener("focus", sync);
   }, []);
 
   useEffect(() => {
@@ -69,10 +88,58 @@ export function ProtectionScreen() {
     }
   }, [strategies, selected]);
 
-  const meta = STATE_META[snap?.state ?? "unknown"] ?? STATE_META.unknown!;
+  useEffect(() => {
+    if (!pending || !snap) return;
+    const state = snap.state;
+    const done = pending === "start" ? state === "active" : state === "stopped";
+    const failed = state === "error" || state === "external_instance";
+    if (!done && !failed) return;
+    const id = pendingToast.current ?? undefined;
+    pendingToast.current = null;
+    setPending(null);
+    if (done) {
+      toast.success(pending === "start" ? "Защита запущена" : "Защита остановлена", {
+        ...(id === undefined ? {} : { id }),
+      });
+    } else {
+      toast.error(pending === "start" ? "Не удалось запустить" : "Не удалось остановить", {
+        ...(id === undefined ? {} : { id }),
+        description: snap.detail,
+      });
+    }
+  }, [pending, snap]);
+
+  useEffect(() => {
+    if (!pending) return;
+    const timer = window.setTimeout(() => {
+      if (pendingToast.current === null) return;
+      toast.warning("Состояние не подтвердилось", {
+        ...(pendingToast.current === null ? {} : { id: pendingToast.current }),
+        description: "Откройте журнал и проверьте, не блокирует ли запуск антивирус",
+      });
+      pendingToast.current = null;
+      setPending(null);
+    }, 60_000);
+    return () => window.clearTimeout(timer);
+  }, [pending]);
+
+  const snapState = snap?.state ?? "unknown";
+  const uiState =
+    pending === "start" && snapState !== "active" && snapState !== "error"
+      ? "starting"
+      : pending === "stop" && snapState === "active"
+        ? "stopping"
+        : snapState;
+  const meta = STATE_META[uiState] ?? STATE_META.unknown!;
   const tone = TONE_VAR[meta.tone] ?? TONE_VAR.idle!;
-  const active = snap?.state === "active";
-  const transitioning = snap?.state === "starting" || snap?.state === "stopping";
+  const active = snapState === "active";
+  const transitioning = uiState === "starting" || uiState === "stopping";
+  const detail =
+    pending === "start"
+      ? "Запускаю winws.exe и проверяю соединение…"
+      : pending === "stop"
+        ? "Останавливаю winws.exe…"
+        : (snap?.detail ?? "Получаю состояние…");
 
   const remember = (value: string) => {
     try {
@@ -88,29 +155,41 @@ export function ProtectionScreen() {
   };
 
   const start = async () => {
-    setBusy(true);
+    if (pending !== null) return;
     remember(selected);
-    const t = toast.loading("Запускаю защиту…");
+    pendingToast.current = toast.loading("Запускаю защиту…");
+    setPending("start");
     try {
       await api.protectionStart(selected);
-      toast.success("Защита запущена", { id: t });
+      await sync();
     } catch (e) {
-      toast.error("Не удалось запустить", { id: t, description: errorText(e) });
-    } finally {
-      setBusy(false);
+      if (pendingToast.current !== null) {
+        toast.error("Не удалось запустить", {
+          id: pendingToast.current,
+          description: errorText(e),
+        });
+        pendingToast.current = null;
+      }
+      setPending(null);
     }
   };
 
   const stop = async () => {
-    setBusy(true);
-    const t = toast.loading("Останавливаю…");
+    if (pending !== null) return;
+    pendingToast.current = toast.loading("Останавливаю…");
+    setPending("stop");
     try {
       await api.protectionStop();
-      toast.success("Защита остановлена", { id: t });
+      await sync();
     } catch (e) {
-      toast.error("Не удалось остановить", { id: t, description: errorText(e) });
-    } finally {
-      setBusy(false);
+      if (pendingToast.current !== null) {
+        toast.error("Не удалось остановить", {
+          id: pendingToast.current,
+          description: errorText(e),
+        });
+        pendingToast.current = null;
+      }
+      setPending(null);
     }
   };
 
@@ -171,20 +250,20 @@ export function ProtectionScreen() {
           </div>
 
           <h2
-            key={snap?.state ?? "unknown"}
+            key={uiState}
             className="text-display enter-soft mt-4"
           >
             {meta.title}
           </h2>
           <p className="text-lede mt-2 max-w-[34rem] text-muted-foreground">
-            {snap?.detail ?? "Получаю состояние…"}
+            {detail}
           </p>
 
           <div className="mt-6 flex flex-wrap items-center gap-2.5">
             {!active && !transitioning && (
               <Button
                 onClick={() => void start()}
-                disabled={!selected || busy}
+                disabled={!selected || pending !== null}
                 size="lg"
                 className="gap-2"
               >
@@ -192,11 +271,11 @@ export function ProtectionScreen() {
                 Запустить
               </Button>
             )}
-            {active && (
+            {active && !transitioning && (
               <Button
                 variant="destructive"
                 onClick={() => void stop()}
-                disabled={busy}
+                disabled={pending !== null}
                 size="lg"
                 className="gap-2"
               >
@@ -207,7 +286,7 @@ export function ProtectionScreen() {
             {transitioning && (
               <Button disabled size="lg" className="gap-2">
                 <span className="size-3.5 animate-spin rounded-full border-[1.5px] border-current border-t-transparent" />
-                {snap?.state === "starting" ? "Запускается…" : "Останавливается…"}
+                {uiState === "starting" ? "Запускается…" : "Останавливается…"}
               </Button>
             )}
           </div>

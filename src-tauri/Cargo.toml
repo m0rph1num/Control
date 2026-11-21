@@ -1,6 +1,6 @@
 [package]
 name = "control"
-version = "2.0.2"
+version = "2.0.3"
 description = "Control — графическая оболочка для Zapret (Flowseal)"
 license = "MIT"
 edition = "2021"

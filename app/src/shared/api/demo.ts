@@ -510,7 +510,6 @@ export const demoApi = {
     _assetUrl: string,
     _assetName: string,
   ): Promise<{ operationId: string; archivePath: string }> => {
-
     const archivePath = "C:\\Users\\Demo\\AppData\\Local\\Temp\\zapret-demo.zip";
     const id = begin("download", true);
     let cancelledFlag = false;
@@ -518,19 +517,23 @@ export const demoApi = {
       cancelledFlag = true;
     });
     update(id, { status: "running", message: "Выполняется" });
-    void (async () => {
 
-      const total = 25_165_824;
-      for (let i = 1_048_576; i <= total; i += 1_048_576) {
-        await delay(320);
-        if (cancelledFlag) {
-          finish(id, "cancelled", "Отменено");
-          return;
-        }
-        update(id, { progress: { current: i, total, message: `${Math.round(i / 1_048_576)} из ${Math.round(total / 1_048_576)} МБ` } });
+    const total = 25_165_824;
+    for (let i = 1_048_576; i <= total; i += 1_048_576) {
+      await delay(320);
+      if (cancelledFlag) {
+        finish(id, "cancelled", "Отменено");
+        throw Object.assign(new Error("Загрузка отменена"), { code: "CANCELLED" });
       }
-      finish(id, "succeeded", `Скачан zapret ${version} (демо): ${archivePath}`);
-    })();
+      update(id, {
+        progress: {
+          current: i,
+          total,
+          message: `${Math.round(i / 1_048_576)} из ${Math.round(total / 1_048_576)} МБ`,
+        },
+      });
+    }
+    finish(id, "succeeded", `Скачан zapret ${version} (демо): ${archivePath}`);
     return { operationId: id, archivePath };
   },
   versionsInstall: async (version: string, _tempArchive: string): Promise<InstalledVersion> => {

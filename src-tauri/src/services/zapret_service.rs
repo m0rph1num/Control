@@ -14,6 +14,27 @@ struct ServiceArgs {
 }
 
 fn build_service_args_for(dir: &Path, strategy_value: &str) -> Result<ServiceArgs, AppError> {
+    let (content, strategy_filename) = load_strategy(dir, strategy_value)?;
+    let game_mode = settings::game_filter_mode(dir);
+    let parsed = parse_strategy_args(&content, dir, game_mode);
+    if !parsed.bin_path.is_file() {
+        return Err(AppError::new(
+            "WINWS_MISSING",
+            "winws.exe не найден в установленной версии",
+        ));
+    }
+    Ok(ServiceArgs {
+        bin_path: parsed.bin_path,
+        args: parsed.args.join(" "),
+        strategy_filename,
+    })
+}
+
+fn load_strategy(dir: &Path, strategy_value: &str) -> Result<(String, String), AppError> {
+    if let Some(name) = strategy_value.strip_prefix("preset:") {
+        let preset = crate::services::presets::read(name)?;
+        return Ok((preset.content, format!("preset:{name}")));
+    }
     let strategies = settings::list_strategies(dir);
     let strategy = strategies
         .iter()
@@ -29,29 +50,23 @@ fn build_service_args_for(dir: &Path, strategy_value: &str) -> Result<ServiceArg
         AppError::new("IO_ERROR", "Не удалось прочитать стратегию")
             .with_details(serde_json::json!({ "error": e.to_string() }))
     })?;
-    let game_mode = settings::game_filter_mode(dir);
-    let parsed = parse_strategy_args(&content, dir, game_mode);
-    if !parsed.bin_path.is_file() {
-        return Err(AppError::new(
-            "WINWS_MISSING",
-            "winws.exe не найден в установленной версии",
-        ));
-    }
-    Ok(ServiceArgs {
-        bin_path: parsed.bin_path,
-        args: parsed.args.join(" "),
-        strategy_filename: strategy.filename.clone(),
-    })
+    Ok((content, strategy.filename.clone()))
 }
 
 pub fn service_install_plan(dir: &Path) -> Result<ElevationPlan, AppError> {
-    let strategy_value = settings::read_flowseal_config()
+    let strategy_value = settings::read_settings_raw()
         .ok()
-        .filter(|v| v.is_object())
-        .and_then(|cfg| {
-            cfg.get("strategy")
-                .and_then(|s| s.as_str())
-                .map(str::to_string)
+        .and_then(|raw| settings::settings_str(&raw, "lastStrategy").map(str::to_string))
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            settings::read_flowseal_config()
+                .ok()
+                .filter(|v| v.is_object())
+                .and_then(|cfg| {
+                    cfg.get("strategy")
+                        .and_then(|s| s.as_str())
+                        .map(str::to_string)
+                })
         })
         .unwrap_or_default();
     service_install_plan_for(dir, &strategy_value)

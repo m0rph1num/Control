@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { api, type InstalledVersion, type ReleaseInfo } from "@/shared/api";
 import { useOperations } from "@/shared/operations";
+import { cancelVersionDownload, installRelease, useVersionJobs } from "@/shared/version-jobs";
 import { EmptyState, Page, PageHeader, SectionCard } from "@/shared/ui/screen";
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
@@ -33,16 +34,13 @@ export function VersionsScreen() {
   const [installed, setInstalled] = useState<InstalledVersion[] | null>(null);
   const [available, setAvailable] = useState<ReleaseInfo[] | null>(null);
   const [availableLoading, setAvailableLoading] = useState(false);
-  const [pendingOpId, setPendingOpId] = useState<string | null>(null);
-  const [pendingVersion, setPendingVersion] = useState<string | null>(null);
-  const [installingVersion, setInstallingVersion] = useState<string | null>(null);
   const [toDelete, setToDelete] = useState<InstalledVersion | null>(null);
   const [removing, setRemoving] = useState<string | null>(null);
   const [switching, setSwitching] = useState<string | null>(null);
   const [freshFolder, setFreshFolder] = useState<string | null>(null);
+  const jobs = useVersionJobs();
   const operations = useOperations();
-  const pendingOp = operations.find((op) => op.id === pendingOpId);
-  const installQueueRef = useRef<{ archive: string; version: string } | null>(null);
+  const handled = useRef(0);
 
   const reload = async (focus?: string) => {
     try {
@@ -73,42 +71,11 @@ export function VersionsScreen() {
   }, []);
 
   useEffect(() => {
-    if (!pendingOp) return;
-    if (pendingOp.status === "succeeded" && pendingOp.kind === "download" && installQueueRef.current) {
-      const job = installQueueRef.current;
-      installQueueRef.current = null;
-      setPendingOpId(null);
-      void (async () => {
-        setInstallingVersion(job.version);
-        const t = toast.loading("Устанавливаю версию…", { description: `zapret ${job.version}` });
-        try {
-          const result = await api.versionsInstall(job.version, job.archive);
-          setPendingVersion(null);
-          await reload(result.folder);
-          toast.success("Версия установлена", { id: t, description: `zapret ${job.version}` });
-        } catch (e) {
-          setPendingVersion(null);
-          toast.error("Установка не удалась", { id: t, description: errorText(e) });
-        } finally {
-          setInstallingVersion(null);
-        }
-      })();
+    if (jobs.completed > handled.current) {
+      handled.current = jobs.completed;
+      void reload(jobs.folder ?? undefined);
     }
-    if (pendingOp.status === "failed" && pendingOp.kind === "download") {
-      installQueueRef.current = null;
-      setPendingOpId(null);
-      setPendingVersion(null);
-      toast.error("Скачивание не удалось", {
-        description: pendingOp.error?.userMessage ?? pendingOp.message,
-      });
-    }
-    if (pendingOp.status === "cancelled" && pendingOp.kind === "download") {
-      installQueueRef.current = null;
-      setPendingOpId(null);
-      setPendingVersion(null);
-      toast.info("Скачивание отменено");
-    }
-  }, [pendingOp?.status, pendingOp?.id]);
+  }, [jobs.completed]);
 
   const switchTo = async (version: InstalledVersion) => {
     if (version.selected || switching !== null) return;
@@ -138,26 +105,6 @@ export function VersionsScreen() {
     }
   };
 
-  const download = async (release: ReleaseInfo) => {
-    if (!release.assetUrl || !release.assetName) {
-      toast.warning("У релиза нет архива .zip или .tar.gz");
-      return;
-    }
-    if (installingVersion !== null) {
-      toast.info("Дождитесь завершения установки");
-      return;
-    }
-    setPendingVersion(release.version);
-    try {
-      const res = await api.versionsDownload(release.version, release.assetUrl, release.assetName);
-      installQueueRef.current = { archive: res.archivePath, version: release.version };
-      setPendingOpId(res.operationId);
-    } catch (e) {
-      setPendingVersion(null);
-      toast.error("Скачивание не удалось", { description: errorText(e) });
-    }
-  };
-
   const confirmDelete = async () => {
     if (!toDelete) return;
     const version = toDelete;
@@ -176,11 +123,19 @@ export function VersionsScreen() {
     }
   };
 
-  const downloading = pendingOp?.kind === "download" && pendingOp.status === "running";
-  const pct =
-    pendingOp?.progress?.total != null && pendingOp.progress.current != null
-      ? Math.min(100, (pendingOp.progress.current * 100) / pendingOp.progress.total)
+  const downloadOp =
+    jobs.job?.phase === "downloading"
+      ? operations.find(
+          (operation) =>
+            operation.kind === "download" &&
+            (operation.status === "running" || operation.status === "queued"),
+        )
       : undefined;
+  const pct =
+    downloadOp?.progress?.total != null && downloadOp.progress.current != null
+      ? Math.min(100, (downloadOp.progress.current * 100) / downloadOp.progress.total)
+      : undefined;
+  const busy = jobs.job !== null;
   const installedByVersion = new Map((installed ?? []).map((item) => [item.version, item]));
 
   return (
@@ -190,7 +145,7 @@ export function VersionsScreen() {
         subtitle="Нажмите на строку, чтобы переключиться."
       />
 
-      {downloading && pendingOp && (
+      {jobs.job?.phase === "downloading" && (
         <section className="material enter-soft rounded-[10px] px-5 py-4">
           <div className="flex items-center justify-between gap-3">
             <span className="flex min-w-0 items-center gap-2">
@@ -200,35 +155,33 @@ export function VersionsScreen() {
                 className="shrink-0 text-[color:var(--accent-foreground)]"
               />
               <span className="min-w-0 truncate text-[13px] font-medium">
-                {pendingOp.progress?.message ?? pendingOp.message}
+                {downloadOp?.progress?.message ?? `Скачиваю zapret ${jobs.job.version}`}
               </span>
             </span>
-            {pendingOp.cancelable && (
-              <Button
-                variant="ghost"
-                size="xs"
-                className="shrink-0 text-destructive"
-                onClick={() => void api.operationsCancel(pendingOp.id)}
-              >
-                Отменить
-              </Button>
-            )}
+            <Button
+              variant="ghost"
+              size="xs"
+              className="shrink-0 text-destructive"
+              onClick={() => void cancelVersionDownload()}
+            >
+              Отменить
+            </Button>
           </div>
-          <Progress value={pct ?? 0} className="mt-2.5" />
-          {pendingOp.progress?.total != null && pendingOp.progress.current != null && (
+          <Progress value={pct} className="mt-2.5" />
+          {downloadOp?.progress?.total != null && downloadOp.progress.current != null && (
             <p className="mt-1.5 font-mono text-[12px] text-muted-foreground">
-              {Math.round(pendingOp.progress.current / 1_048_576)} /{" "}
-              {Math.round(pendingOp.progress.total / 1_048_576)} МБ
+              {Math.round(downloadOp.progress.current / 1_048_576)} /{" "}
+              {Math.round(downloadOp.progress.total / 1_048_576)} МБ
             </p>
           )}
         </section>
       )}
 
-      {installingVersion && !downloading && (
+      {jobs.job?.phase === "installing" && (
         <section className="material enter-soft flex items-center gap-2 rounded-[10px] px-5 py-4">
           <span className="size-3.5 shrink-0 animate-spin rounded-full border-[1.5px] border-current border-t-transparent" />
           <span className="min-w-0 truncate text-[13px] font-medium">
-            Устанавливаю zapret {installingVersion}…
+            Устанавливаю zapret {jobs.job.version}…
           </span>
         </section>
       )}
@@ -362,8 +315,9 @@ export function VersionsScreen() {
 
         {!availableLoading &&
           available?.map((release) => {
-            const isPending = pendingVersion === release.version;
-            const isInstalling = installingVersion === release.version;
+            const isJob = jobs.job?.version === release.version;
+            const isInstalling = isJob && jobs.job?.phase === "installing";
+            const isPending = isJob && jobs.job?.phase === "downloading";
             const installedItem = installedByVersion.get(release.version);
             const isInstalled = installedItem !== undefined;
             const noAsset = !release.assetUrl || !release.assetName;
@@ -416,14 +370,8 @@ export function VersionsScreen() {
                   <Button
                     size="sm"
                     className="shrink-0 gap-1.5"
-                    disabled={
-                      isPending ||
-                      isInstalling ||
-                      downloading ||
-                      installingVersion !== null ||
-                      noAsset
-                    }
-                    onClick={() => void download(release)}
+                    disabled={busy || noAsset}
+                    onClick={() => void installRelease(release)}
                   >
                     {isPending || isInstalling ? (
                       <span className="size-3.5 animate-spin rounded-full border-[1.5px] border-current border-t-transparent" />

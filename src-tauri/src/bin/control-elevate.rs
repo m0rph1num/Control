@@ -7,7 +7,6 @@ use std::process::Command;
 use std::os::windows::process::CommandExt;
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-const OUTPUT_TAIL: usize = 300;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -61,26 +60,24 @@ fn run(args: &[String]) -> i32 {
         return 3;
     }
 
-    let mut all_ok = true;
+    let mut failed = false;
     if let Some(steps) = plan["steps"].as_array() {
         for step in steps {
             let step_report = execute_step(step);
-            if !step_report["ok"].as_bool().unwrap_or(false) {
-                all_ok = false;
-
-                if step["ignore_failure"].as_bool().unwrap_or(false) {
-                    all_ok = true;
-                }
+            if !step_report["ok"].as_bool().unwrap_or(false)
+                && !step["ignore_failure"].as_bool().unwrap_or(false)
+            {
+                failed = true;
             }
             report["steps"].as_array_mut().unwrap().push(step_report);
         }
     }
-    report["ok"] = json!(all_ok);
-    if !all_ok && report["error"].is_null() {
+    report["ok"] = json!(!failed);
+    if failed && report["error"].is_null() {
         report["error"] = json!("STEP_FAILED");
     }
     write_report(report_path, &report);
-    if all_ok {
+    if !failed {
         0
     } else {
         1
@@ -105,25 +102,36 @@ fn execute_step(step: &Value) -> Value {
         "copy_if_absent" => copy_if_absent(step),
         "service_create" => sc_create(step),
         "service_start" => run_simple("sc", &["start", &name(step)]),
-        "service_stop" => run_simple("net", &["stop", &name(step)]),
+        "service_stop" => run_simple("sc", &["stop", &name(step)]),
         "service_delete" => run_simple("sc", &["delete", &name(step)]),
         "reg_set" => reg_set(step),
         "legacy_autostart_cleanup" => legacy_cleanup(),
         _ => Err(("UNKNOWN_ACTION".into(), "unknown action".into())),
     };
     match result {
-        Ok((code, tail)) if code == 0 => json!({
-            "action": action, "ok": true, "exitCode": code,
-            "outputTail": tail,
-        }),
         Ok((code, tail)) => json!({
-            "action": action, "ok": false, "exitCode": code,
+            "action": action,
+            "ok": is_benign(action, code),
+            "exitCode": code,
             "outputTail": tail,
         }),
-        Err(reason) => json!({
+        Err((reason, tail)) => json!({
             "action": action, "ok": false, "exitCode": null,
-            "outputTail": reason.1,
+            "outputTail": tail, "reason": reason,
         }),
+    }
+}
+
+fn is_benign(action: &str, code: i32) -> bool {
+    if code == 0 {
+        return true;
+    }
+    match action {
+        "service_start" => code == 1056,
+        "service_stop" => matches!(code, 1060 | 1062),
+        "service_delete" => matches!(code, 1060 | 1072),
+        "service_create" => code == 1073,
+        _ => false,
     }
 }
 
@@ -138,15 +146,28 @@ fn copy_if_absent(step: &Value) -> Result<(i32, String), (String, String)> {
     let to = step["to"]
         .as_str()
         .ok_or(("BAD_PARAMS".to_string(), "to missing".to_string()))?;
-    if !Path::new(from).is_file() {
+    if Path::new(from).is_file() {
+        let target_ok = std::fs::metadata(to)
+            .map(|m| m.is_file() && m.len() > 0)
+            .unwrap_or(false);
+        if target_ok {
+            return Ok((0, "already present".into()));
+        }
+    } else {
         return Err(("SOURCE_MISSING".into(), format!("{from} not found")));
-    }
-    if Path::new(to).is_file() {
-        return Ok((0, "already present".into()));
     }
     std::fs::copy(from, to)
         .map(|_| (0, "copied".into()))
         .map_err(|e| ("COPY_FAILED".into(), format!("{from} -> {to}: {e}")))
+}
+
+fn service_exists(svc_name: &str) -> bool {
+    let mut cmd = Command::new("sc");
+    cmd.args(["query", svc_name])
+        .creation_flags(CREATE_NO_WINDOW)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    matches!(cmd.status(), Ok(status) if status.code() == Some(0))
 }
 
 fn sc_create(step: &Value) -> Result<(i32, String), (String, String)> {
@@ -154,6 +175,28 @@ fn sc_create(step: &Value) -> Result<(i32, String), (String, String)> {
     if svc_name.is_empty() {
         return Err(("BAD_PARAMS".into(), "service name missing".into()));
     }
+    if step["start_if_absent_only"].as_bool().unwrap_or(false) && service_exists(&svc_name) {
+        return Ok((0, "service already exists".into()));
+    }
+
+    let mut last: Result<(i32, String), (String, String)> = Err((
+        "SERVICE_NOT_CREATED".into(),
+        "service create did not run".into(),
+    ));
+    for attempt in 0..4 {
+        last = create_service(step);
+        match &last {
+            Ok((1075, _)) => {
+                std::thread::sleep(std::time::Duration::from_millis(650 * (attempt + 1)));
+            }
+            _ => return last,
+        }
+    }
+    last
+}
+
+fn create_service(step: &Value) -> Result<(i32, String), (String, String)> {
+    let svc_name = name(step);
     let bin_path = step["bin_path"]
         .as_str()
         .ok_or(("BAD_PARAMS".to_string(), "bin_path missing".to_string()))?;
@@ -234,11 +277,15 @@ fn run_command(cmd: &mut Command) -> Result<(i32, String), (String, String)> {
     match cmd.output() {
         Ok(output) => {
             let code = output.status.code().unwrap_or(-1);
-            let mut tail = String::from_utf8_lossy(&output.stderr).to_string();
-            if tail.is_empty() {
-                tail = String::from_utf8_lossy(&output.stdout).to_string();
-            }
-            let tail = tail.chars().rev().take(OUTPUT_TAIL).collect::<String>();
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let combined = match (stderr.is_empty(), stdout.is_empty()) {
+                (false, false) => format!("{stderr} {stdout}"),
+                (false, true) => stderr,
+                (true, false) => stdout,
+                (true, true) => String::new(),
+            };
+            let tail = combined.chars().rev().take(400).collect::<String>();
             let tail = tail.chars().rev().collect::<String>();
             Ok((code, tail))
         }

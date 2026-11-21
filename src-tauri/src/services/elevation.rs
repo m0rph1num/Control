@@ -150,7 +150,7 @@ pub fn run_elevated(
 }
 
 fn read_report(path: &Path) -> Option<ElevationReport> {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(1200);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(3000);
     loop {
         if let Ok(bytes) = std::fs::read(path) {
             if let Ok(report) = serde_json::from_slice::<ElevationReport>(&bytes) {
@@ -263,11 +263,15 @@ fn run_helper_via_uac(
     report: &Path,
     timeout: std::time::Duration,
 ) -> Result<HelperRun, AppError> {
+    let arguments = format!(
+        "\"{}\" \"{}\"",
+        plan.to_string_lossy(),
+        report.to_string_lossy()
+    );
     let script = format!(
-        "try {{ $p = Start-Process -FilePath '{}' -ArgumentList '\"{}\" \"{}\"' -Verb RunAs -Wait -PassThru; exit $p.ExitCode }} catch {{ if ($_.Exception.Message -match 'cancel') {{ exit 1223 }} else {{ Write-Error $_.Exception.Message; exit 1 }} }}",
+        "try {{ $p = Start-Process -FilePath {} -ArgumentList {} -Verb RunAs -Wait -PassThru; exit $p.ExitCode }} catch {{ if ($_.Exception.HResult -eq -2147023673 -or $_.Exception.Message -match 'cancel|отмен') {{ exit 1223 }} else {{ Write-Error $_.Exception.Message; exit 1 }} }}",
         ps_quote(&helper.to_string_lossy()),
-        ps_quote(&plan.to_string_lossy()),
-        ps_quote(&report.to_string_lossy()),
+        ps_quote(&arguments),
     );
 
     let mut cmd = std::process::Command::new("powershell");

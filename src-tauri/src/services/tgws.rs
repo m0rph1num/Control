@@ -85,29 +85,10 @@ fn write_config(value: &serde_json::Value) -> Result<(), AppError> {
     })
 }
 
-async fn find_processes() -> Vec<(u32, Option<String>)> {
-    let script = "Get-Process -Name 'TgWsProxy*' -ErrorAction SilentlyContinue | \
-                  ForEach-Object { \"$($_.Id)|$($_.Path)\" }";
-    let output = tokio::process::Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", script])
-        .creation_flags(0x0800_0000)
-        .output()
-        .await;
-    let Ok(output) = output else {
-        return Vec::new();
-    };
-    if !output.status.success() {
-        return Vec::new();
-    }
-    let text = String::from_utf8_lossy(&output.stdout);
-    text.lines()
-        .filter_map(|line| {
-            let line = line.trim();
-            let (pid, path) = line.split_once('|')?;
-            let pid = pid.trim().parse::<u32>().ok()?;
-            let path = path.trim();
-            Some((pid, (!path.is_empty()).then(|| path.to_string())))
-        })
+fn find_processes() -> Vec<(u32, Option<String>)> {
+    crate::services::process_scan::list(EXE_NAME)
+        .into_iter()
+        .map(|entry| (entry.pid, entry.path))
         .collect()
 }
 
@@ -171,12 +152,11 @@ fn build_status(running: bool, pid: Option<u32>, exe: Option<PathBuf>) -> TgwsSt
 pub async fn status() -> TgwsStatus {
     let exe = exe_path().ok();
     let dir = install_dir().unwrap_or_default();
-    let procs = find_processes().await;
-    let ours: Vec<&(u32, Option<String>)> = procs
+    let procs = find_processes();
+    let ours = procs
         .iter()
-        .filter(|(_, path)| owns_process(path.as_deref(), &dir))
-        .collect();
-    build_status(!ours.is_empty(), ours.first().map(|(pid, _)| *pid), exe)
+        .find(|(_, path)| owns_process(path.as_deref(), &dir));
+    build_status(ours.is_some(), ours.map(|(pid, _)| *pid), exe)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -336,8 +316,9 @@ pub async fn start() -> Result<TgwsStatus, AppError> {
             "TG WS Proxy не установлен. Скачайте его на вкладке TG Proxy",
         ));
     }
-    if status().await.running {
-        return Ok(status().await);
+    let current = status().await;
+    if current.running {
+        return Ok(current);
     }
     std::process::Command::new(&exe)
         .current_dir(install_dir()?)
@@ -371,7 +352,7 @@ pub async fn start() -> Result<TgwsStatus, AppError> {
 
 pub async fn stop() -> Result<TgwsStatus, AppError> {
     let dir = install_dir()?;
-    let procs = find_processes().await;
+    let procs = find_processes();
     let mut killed = false;
     for (pid, path) in procs {
         if !owns_process(path.as_deref(), &dir) {

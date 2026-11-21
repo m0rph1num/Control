@@ -30,6 +30,8 @@ export interface OperationSnapshot {
   kind: string;
   status: OperationStatus;
   message: string;
+  startedAt?: string;
+  finishedAt?: string;
   revision: number;
   progress?: { current?: number; total?: number; message?: string };
   error?: { code: string; userMessage: string; details?: unknown };

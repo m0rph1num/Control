@@ -173,6 +173,7 @@ fn archive_ext(asset_name: &str) -> Result<String, AppError> {
     }
 }
 
+#[derive(Debug)]
 enum ArchiveKind {
     Zip,
     TarGz,
@@ -222,9 +223,13 @@ pub fn download_blocking(
         ));
     }
     if let Ok(meta) = std::fs::metadata(dest) {
-        if meta.len() > 0 && detect_archive(dest).is_ok() {
-            on_progress(meta.len(), meta.len());
-            return Ok(());
+        if meta.len() > 0 {
+            if let Ok(kind) = detect_archive(dest) {
+                if validate_archive(dest, &kind).is_ok() {
+                    on_progress(meta.len(), meta.len());
+                    return Ok(());
+                }
+            }
         }
     }
     let resp = ureq::get(url)
@@ -332,6 +337,7 @@ pub fn install_blocking(version: &str, temp_archive: &Path) -> Result<InstalledV
         let _ = std::fs::remove_dir_all(&staging);
         return Err(err);
     }
+    let _ = std::fs::remove_file(temp_archive);
 
     Ok(InstalledVersion {
         folder: ver_name.clone(),
@@ -348,22 +354,27 @@ fn extract_and_finalize(
     ver_dir: &Path,
     staging: &Path,
 ) -> Result<(), AppError> {
-    let extracted = match detect_archive(archive)? {
-        ArchiveKind::Zip => extract_zip_via_powershell(archive, staging)?,
+    let kind = detect_archive(archive)?;
+    validate_archive(archive, &kind)?;
+    let extracted = match kind {
+        ArchiveKind::Zip => extract_zip(archive, staging)?,
         ArchiveKind::TarGz => extract_tar_gz(archive, staging)?,
     };
     if !extracted {
-        return Err(AppError::new("EXTRACT_EMPTY", "Архив пуст или повреждён"));
+        return Err(AppError::new(
+            "EXTRACT_EMPTY",
+            "Архив пуст — внутри нет файлов. Скачайте версию заново",
+        ));
     }
 
-    flatten_single_root(staging)?;
+    normalize_layout(staging)?;
 
     preserve_user_customizations(&root.join(format!("v{version}")), staging);
 
     if !staging.join("bin").join("winws.exe").is_file() {
         return Err(AppError::new(
             "INVALID_ARCHIVE",
-            "В архиве нет bin/winws.exe — это не сборка Zapret",
+            "В архиве нет bin/winws.exe — это не сборка Zapret. Скачайте другую версию",
         ));
     }
 
@@ -398,34 +409,146 @@ fn extract_and_finalize(
     Ok(())
 }
 
+fn validate_archive(archive: &Path, kind: &ArchiveKind) -> Result<(), AppError> {
+    use std::io::{Read, Seek, SeekFrom};
+    let size = std::fs::metadata(archive).map(|m| m.len()).unwrap_or(0);
+    if size < 22 {
+        return Err(corrupt_archive("Файл слишком мал"));
+    }
+    if let ArchiveKind::Zip = kind {
+        let tail_len = size.min(66_000) as usize;
+        let mut file = std::fs::File::open(archive).map_err(|e| {
+            AppError::new("IO_ERROR", "Не удалось открыть архив")
+                .with_details(serde_json::json!({ "error": e.to_string() }))
+        })?;
+        file.seek(SeekFrom::End(-(tail_len as i64))).map_err(|e| {
+            AppError::new("IO_ERROR", "Не удалось прочитать архив")
+                .with_details(serde_json::json!({ "error": e.to_string() }))
+        })?;
+        let mut tail = vec![0u8; tail_len];
+        file.read_exact(&mut tail).map_err(|e| {
+            AppError::new("IO_ERROR", "Не удалось прочитать архив")
+                .with_details(serde_json::json!({ "error": e.to_string() }))
+        })?;
+        if !tail.windows(4).any(|window| window == b"PK\x05\x06") {
+            return Err(corrupt_archive("В ZIP-архиве нет оглавления"));
+        }
+    }
+    Ok(())
+}
+
+fn corrupt_archive(reason: &str) -> AppError {
+    AppError::new(
+        "ARCHIVE_CORRUPT",
+        "Архив повреждён или скачан не полностью. Скачайте версию заново; если ошибка повторяется, временно отключите антивирус",
+    )
+    .with_details(serde_json::json!({ "reason": reason }))
+}
+
 fn atomic_path_write(path: &Path, value: &serde_json::Value) -> Result<(), AppError> {
     atomic_write_settings(path, value)
 }
 
-fn extract_zip_via_powershell(archive: &Path, staging: &Path) -> Result<bool, AppError> {
+fn extract_zip(archive: &Path, staging: &Path) -> Result<bool, AppError> {
+    let mut attempts: Vec<String> = Vec::new();
+    match extract_with_tar(archive, staging, false) {
+        Ok(()) if file_count(staging) > 0 => return Ok(true),
+        Ok(()) => attempts.push("tar: архив распаковался пустым".into()),
+        Err(e) => attempts.push(format!("tar: {}", command_error_text(&e))),
+    }
+    clear_dir(staging);
     let script = format!(
-        "try {{ Expand-Archive -LiteralPath '{}' -DestinationPath '{}' -Force; exit 0 }} catch {{ Write-Error $_.Exception.Message; exit 1 }}",
+        "$ErrorActionPreference='Stop'; try {{ Expand-Archive -LiteralPath {} -DestinationPath {} -Force; exit 0 }} catch {{ Write-Error $_.Exception.Message; exit 1 }}",
         ps_quote(&archive.to_string_lossy()),
         ps_quote(&staging.to_string_lossy()),
     );
     let mut cmd = std::process::Command::new("powershell");
-    cmd.args(["-NoProfile", "-Command", &script]);
+    cmd.args(["-NoProfile", "-NonInteractive", "-Command", &script]);
     cmd.creation_flags(CREATE_NO_WINDOW);
-    let out = run_blocking_cmd_sync(&mut cmd)?;
-    Ok(out && file_count(staging) > 0)
+    match run_blocking_cmd_sync(&mut cmd) {
+        Ok(()) if file_count(staging) > 0 => Ok(true),
+        Ok(()) => Err(extract_error(attempts)),
+        Err(e) => {
+            attempts.push(format!("Expand-Archive: {}", command_error_text(&e)));
+            Err(extract_error(attempts))
+        }
+    }
 }
 
 fn extract_tar_gz(archive: &Path, staging: &Path) -> Result<bool, AppError> {
-    let mut cmd = std::process::Command::new("tar");
-    cmd.args([
-        "-xzf",
-        &archive.to_string_lossy(),
-        "-C",
-        &staging.to_string_lossy(),
-    ]);
-    cmd.creation_flags(CREATE_NO_WINDOW);
-    let ok = run_blocking_cmd_sync(&mut cmd)?;
-    Ok(ok && file_count(staging) > 0)
+    match extract_with_tar(archive, staging, true) {
+        Ok(()) => Ok(file_count(staging) > 0),
+        Err(e) => Err(AppError::new(
+            "EXTRACT_FAILED",
+            "Не удалось распаковать .tar.gz. Убедитесь, что архив не повреждён, и повторите загрузку",
+        )
+        .with_details(serde_json::json!({ "output": command_error_text(&e), "details": e.details }))),
+    }
+}
+
+fn extract_with_tar(archive: &Path, staging: &Path, gzip: bool) -> Result<(), AppError> {
+    let flag = if gzip { "-xzf" } else { "-xf" };
+    let mut last: Option<AppError> = None;
+    for program in tar_candidates() {
+        let mut cmd = std::process::Command::new(&program);
+        cmd.arg(flag).arg(archive).arg("-C").arg(staging);
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        match run_blocking_cmd_sync(&mut cmd) {
+            Ok(()) => return Ok(()),
+            Err(e) => last = Some(e),
+        }
+    }
+    Err(last.unwrap_or_else(|| {
+        AppError::new(
+            "EXTRACT_SPAWN_FAILED",
+            "Не найден tar для распаковки архива",
+        )
+    }))
+}
+
+fn tar_candidates() -> Vec<PathBuf> {
+    let mut candidates = vec![PathBuf::from("tar")];
+    if let Ok(root) = std::env::var("SYSTEMROOT") {
+        candidates.push(Path::new(&root).join("System32").join("tar.exe"));
+    }
+    candidates
+}
+
+fn extract_error(attempts: Vec<String>) -> AppError {
+    AppError::new(
+        "EXTRACT_FAILED",
+        "Не удалось распаковать архив. Скачайте версию заново; если ошибка повторяется, временно отключите антивирус",
+    )
+    .with_details(serde_json::json!({ "attempts": attempts }))
+}
+
+fn command_error_text(error: &AppError) -> String {
+    let output = error
+        .details
+        .as_ref()
+        .and_then(|details| details.get("output"))
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .trim();
+    if output.is_empty() {
+        error.user_message.clone()
+    } else {
+        format!("{}: {}", error.user_message, output)
+    }
+}
+
+fn clear_dir(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            let _ = std::fs::remove_dir_all(&path);
+        } else {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -433,54 +556,105 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 #[cfg(not(windows))]
 const CREATE_NO_WINDOW: u32 = 0;
 
-fn run_blocking_cmd_sync(cmd: &mut std::process::Command) -> Result<bool, AppError> {
+fn run_blocking_cmd_sync(cmd: &mut std::process::Command) -> Result<(), AppError> {
     use std::process::Stdio;
     let output = cmd
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
         .map_err(|e| {
-            AppError::new("EXTRACT_SPAWN_FAILED", "Не удалось запустить распаковку")
-                .with_details(serde_json::json!({ "error": e.to_string() }))
+            AppError::new(
+                "EXTRACT_SPAWN_FAILED",
+                "Не удалось запустить распаковку: системная утилита недоступна",
+            )
+            .with_details(serde_json::json!({ "error": e.to_string() }))
         })?;
-    if !output.status.success() {
-        return Err(AppError::new(
-            "EXTRACT_FAILED",
-            "Не удалось распаковать архив",
-        )
-        .with_details(serde_json::json!({
-            "stderr": String::from_utf8_lossy(&output.stderr).chars().take(300).collect::<String>()
-        })));
+    if output.status.success() {
+        return Ok(());
     }
-    Ok(true)
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let combined = match (stderr.is_empty(), stdout.is_empty()) {
+        (false, false) => format!("{stderr} {stdout}"),
+        (false, true) => stderr,
+        (true, false) => stdout,
+        (true, true) => String::new(),
+    };
+    let tail = combined.chars().take(600).collect::<String>();
+    Err(AppError::new(
+        "EXTRACT_FAILED",
+        "Системная утилита не смогла распаковать архив",
+    )
+    .with_details(serde_json::json!({
+        "exitCode": output.status.code(),
+        "output": tail,
+    })))
 }
 
 fn file_count(dir: &Path) -> usize {
     std::fs::read_dir(dir).map(|d| d.count()).unwrap_or(0)
 }
 
-fn flatten_single_root(staging: &Path) -> Result<(), AppError> {
-    let entries: Vec<PathBuf> = std::fs::read_dir(staging)
-        .map_err(|e| io_err("Не удалось прочитать staging-папку", e))?
-        .flatten()
-        .map(|e| e.path())
-        .collect();
-    if entries.len() != 1 || !entries[0].is_dir() {
+fn normalize_layout(staging: &Path) -> Result<(), AppError> {
+    if staging.join("bin").join("winws.exe").is_file() {
         return Ok(());
     }
-    let sub = &entries[0];
-    for item in std::fs::read_dir(sub)
+    let Some(root) = find_winws_dir(staging, 0) else {
+        return Ok(());
+    };
+    for item in std::fs::read_dir(&root)
         .map_err(|e| io_err("Не удалось прочитать содержимое архива", e))?
         .flatten()
     {
         let dst = staging.join(item.file_name());
+        if dst.exists() {
+            if dst.is_dir() {
+                let _ = std::fs::remove_dir_all(&dst);
+            } else {
+                let _ = std::fs::remove_file(&dst);
+            }
+        }
         std::fs::rename(item.path(), &dst).map_err(|e| {
             AppError::new("IO_ERROR", "Не удалось развернуть содержимое архива")
                 .with_details(serde_json::json!({ "error": e.to_string() }))
         })?;
     }
-    std::fs::remove_dir(sub).map_err(|e| io_err("Не удалось удалить корневую папку архива", e))?;
+    let _ = std::fs::remove_dir(&root);
+    remove_empty_ancestors(root.parent().unwrap_or(staging), staging);
     Ok(())
+}
+
+fn remove_empty_ancestors(start: &Path, stop: &Path) {
+    let mut current = start.to_path_buf();
+    while current != stop && current.starts_with(stop) {
+        if std::fs::remove_dir(&current).is_err() {
+            break;
+        }
+        match current.parent() {
+            Some(parent) => current = parent.to_path_buf(),
+            None => break,
+        }
+    }
+}
+
+fn find_winws_dir(dir: &Path, depth: usize) -> Option<PathBuf> {
+    if depth > 3 {
+        return None;
+    }
+    let entries = std::fs::read_dir(dir).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        if path.join("bin").join("winws.exe").is_file() {
+            return Some(path);
+        }
+        if let Some(found) = find_winws_dir(&path, depth + 1) {
+            return Some(found);
+        }
+    }
+    None
 }
 
 fn io_err(message: &str, e: std::io::Error) -> AppError {
@@ -663,5 +837,91 @@ mod tests {
 
         let err = install_blocking("9.9.9", &archive).unwrap_err();
         assert_eq!(err.code, "ARCHIVE_EMPTY");
+    }
+
+    #[test]
+    fn detect_archive_uses_magic_bytes_not_extension() {
+        let dir = tmpdir("magic");
+        let zip = dir.join("payload.tar.gz");
+        std::fs::write(&zip, [0x50, 0x4b, 0x03, 0x04, 0, 0]).unwrap();
+        assert!(matches!(detect_archive(&zip).unwrap(), ArchiveKind::Zip));
+
+        let gz = dir.join("payload.zip");
+        std::fs::write(&gz, [0x1f, 0x8b, 0, 0, 0, 0]).unwrap();
+        assert!(matches!(detect_archive(&gz).unwrap(), ArchiveKind::TarGz));
+
+        let rar = dir.join("payload.zip");
+        std::fs::write(&rar, b"Rar!\x1a\x07\x00").unwrap();
+        assert_eq!(
+            detect_archive(&rar).unwrap_err().code,
+            "UNSUPPORTED_ARCHIVE"
+        );
+    }
+
+    #[test]
+    fn normalize_layout_hoists_nested_version_root() {
+        let dir = tmpdir("layout");
+        let nested = dir.join("zapret-flowseal").join("deep");
+        std::fs::create_dir_all(nested.join("bin")).unwrap();
+        std::fs::write(nested.join("bin").join("winws.exe"), b"exe").unwrap();
+        std::fs::write(nested.join("readme.txt"), b"hi").unwrap();
+
+        normalize_layout(&dir).unwrap();
+
+        assert!(dir.join("bin").join("winws.exe").is_file());
+        assert!(dir.join("readme.txt").is_file());
+        assert!(!dir.join("zapret-flowseal").exists());
+    }
+
+    #[test]
+    fn normalize_layout_keeps_flat_archive_untouched() {
+        let dir = tmpdir("flat");
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        std::fs::write(dir.join("bin").join("winws.exe"), b"exe").unwrap();
+
+        normalize_layout(&dir).unwrap();
+
+        assert!(dir.join("bin").join("winws.exe").is_file());
+    }
+
+    #[test]
+    fn corrupt_zip_without_central_directory_is_rejected() {
+        let dir = tmpdir("corrupt");
+        let archive = dir.join("broken.zip");
+        let mut bytes = vec![0x50, 0x4b, 0x03, 0x04];
+        bytes.extend_from_slice(&[0u8; 200]);
+        std::fs::write(&archive, bytes).unwrap();
+
+        let err = validate_archive(&archive, &ArchiveKind::Zip).unwrap_err();
+        assert_eq!(err.code, "ARCHIVE_CORRUPT");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn extract_zip_handles_paths_with_spaces() {
+        let base = tmpdir("zip space");
+        let source = base.join("payload with space");
+        std::fs::create_dir_all(source.join("bin")).unwrap();
+        std::fs::write(source.join("bin").join("winws.exe"), b"exe").unwrap();
+
+        let archive = base.join("my archive.zip");
+        let script = format!(
+            "$ErrorActionPreference='Stop'; Compress-Archive -LiteralPath {} -DestinationPath {} -Force",
+            ps_quote(&source.to_string_lossy()),
+            ps_quote(&archive.to_string_lossy()),
+        );
+        let status = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .creation_flags(CREATE_NO_WINDOW)
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let staging = base.join("staging dir");
+        std::fs::create_dir_all(&staging).unwrap();
+        assert!(extract_zip(&archive, &staging).unwrap());
+
+        normalize_layout(&staging).unwrap();
+        assert!(staging.join("bin").join("winws.exe").is_file());
     }
 }

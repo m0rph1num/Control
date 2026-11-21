@@ -19,6 +19,7 @@ import { BrandMark } from "@/shared/ui/BrandMark";
 import { useDesign, type ThemeMode } from "@/shared/theme";
 import { WhatsNewModal } from "@/features/whatsnew/WhatsNewModal";
 import { cn } from "cn";
+import { cacheTgwsStatus, cachedTgwsStatus } from "@/shared/status-cache";
 
 const LICENSES: { name: string; version: string; author: string; license: string }[] = [
   { name: "Zapret", version: "DPI-обход", author: "bol-van · сборка Flowseal", license: "GPL-3.0" },
@@ -48,7 +49,7 @@ export function SettingsScreen() {
   const [service, setService] = useState<ServiceStatus | null>(null);
   const [serviceBusy, setServiceBusy] = useState<"install" | "remove" | null>(null);
   const [confirmService, setConfirmService] = useState<"install" | "remove" | null>(null);
-  const [tgws, setTgws] = useState<TgwsStatus | null>(null);
+  const [tgws, setTgws] = useState<TgwsStatus | null>(cachedTgwsStatus);
   const [savingTgwsAutostart, setSavingTgwsAutostart] = useState(false);
   const [licensesOpen, setLicensesOpen] = useState(false);
   const [whatsNewOpen, setWhatsNewOpen] = useState(false);
@@ -76,8 +77,11 @@ export function SettingsScreen() {
       .catch(() => setService(null));
     api
       .tgwsStatus()
-      .then(setTgws)
-      .catch(() => setTgws(null));
+      .then((value) => {
+        setTgws(value);
+        cacheTgwsStatus(value);
+      })
+      .catch(() => setTgws(cachedTgwsStatus()));
   }, []);
 
   const patch = (key: string, value: boolean) => {
@@ -115,7 +119,11 @@ export function SettingsScreen() {
   };
 
   const toggleTgwsAutostart = async (enabled: boolean) => {
-    if (enabled && !tgws?.installed) {
+    if (enabled && tgws === null) {
+      toast.info("Ещё проверяю установку TG WS Proxy — попробуйте через пару секунд");
+      return;
+    }
+    if (enabled && tgws && !tgws.installed) {
       toast.warning("Сначала установите TG WS Proxy на вкладке TG Proxy");
       return;
     }
@@ -131,7 +139,9 @@ export function SettingsScreen() {
         }
         if (tgws && !tgws.running) {
           try {
-            setTgws(await api.tgwsStart());
+            const next = await api.tgwsStart();
+            setTgws(next);
+            cacheTgwsStatus(next);
           } catch (e) {
             toast.error("Прокси не запустился", { description: errorText(e) });
           }
@@ -144,6 +154,7 @@ export function SettingsScreen() {
           description: "Запущенный прокси продолжит работать до перезагрузки",
         });
       }
+      setSettings(await api.settingsGet());
     } catch (e) {
       setSettings(prev);
       toast.error("Не удалось изменить автозапуск TG WS Proxy", { description: errorText(e) });
@@ -192,10 +203,14 @@ export function SettingsScreen() {
   };
 
   const saveDir = () => {
+    const value = controlDir.trim();
     setSavingDir(true);
     api
-      .settingsUpdate({ controlDir: controlDir.trim() })
-      .then(() => toast.success("Папка сохранена"))
+      .settingsUpdate({ controlDir: value })
+      .then(() => {
+        setSettings((cur) => ({ ...(cur ?? {}), controlDir: value }));
+        toast.success("Папка сохранена");
+      })
       .catch((e) => toast.error("Не удалось сохранить папку", { description: errorText(e) }))
       .finally(() => setSavingDir(false));
   };

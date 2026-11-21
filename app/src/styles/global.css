@@ -521,6 +521,21 @@ body,
   animation: enter-rise 0.2s ease-out both;
 }
 
+@keyframes page-enter {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.page-enter {
+  animation: page-enter 0.2s ease-out;
+}
+
 .status-ring {
   position: absolute;
   inset: 0;
@@ -553,6 +568,21 @@ body,
   50% {
     opacity: 0.5;
   }
+}
+
+@keyframes progress-indeterminate {
+  from {
+    transform: translateX(-110%);
+  }
+  to {
+    transform: translateX(330%);
+  }
+}
+
+.progress-indeterminate {
+  width: 35%;
+  flex: none;
+  animation: progress-indeterminate 1.25s ease-in-out infinite;
 }
 
 .row[data-removing="true"] {
@@ -1266,8 +1296,16 @@ html [data-sonner-toaster] {
   .state-hero-noise,
   .boot-haze,
   .animate-pulse-soft,
-  .score-ring-value {
+  .score-ring-value,
+  .page-enter,
+  .enter-soft,
+  .enter-rise {
     animation: none !important;
+  }
+
+  .status-ring {
+    animation: none !important;
+    opacity: 0.35;
   }
 
   *,
