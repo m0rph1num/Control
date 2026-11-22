@@ -170,7 +170,7 @@ export function SettingsScreen() {
     setServiceBusy(action);
     const t = toast.loading(
       action === "install" ? "Включаю автозапуск zapret…" : "Выключаю автозапуск zapret…",
-      { description: "Подтвердите запрос UAC" },
+      { description: "Создаю системную службу Windows" },
     );
     try {
       if (action === "install") {
@@ -432,7 +432,7 @@ export function SettingsScreen() {
 
           <p className="text-caption border-t border-[var(--separator)] pt-4 leading-relaxed text-muted-foreground">
             Control и zapret включаются независимо: можно оставить только один. Служба zapret
-            требует подтверждения UAC. TG WS Proxy работает только вместе с Control — при
+            создаётся с правами Control. TG WS Proxy работает только вместе с Control — при
             включении его автозапуск Control активируется автоматически.
           </p>
         </div>
@@ -470,7 +470,7 @@ export function SettingsScreen() {
                   className="group/version inline-flex items-center gap-1 rounded-[5px] bg-[var(--fill)] px-1.5 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-[var(--fill-strong)] hover:text-foreground"
                   title="Что нового в Control"
                 >
-                  {appInfo?.version ?? "2.0.2"}
+                  {appInfo?.version ?? "2.0.4"}
                   <Icon
                     name="alt-arrow-right-bold"
                     size={10}
@@ -591,7 +591,7 @@ export function SettingsScreen() {
         }
         description={
           confirmService === "install"
-            ? "Действие выполнится с правами администратора (запрос UAC): будет создана и запущена системная служба zapret. Она стартует вместе с Windows независимо от Control."
+            ? "Действие выполнится с правами администратора: будет создана и запущена системная служба zapret. Она стартует вместе с Windows независимо от Control."
             : "Служба zapret будет остановлена и удалена. Защиту можно будет запускать вручную из Control — автозапуск zapret перестанет работать."
         }
         footer={

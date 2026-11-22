@@ -72,7 +72,8 @@ export function StrategyAdvisor({
 
   const best = report?.candidates[0] ?? null;
   const alternatives = report?.candidates.slice(1, 3) ?? [];
-  const isCurrent = best !== null && (applied === best.value || (active && selected === best.value));
+  const isSelected = best !== null && (applied === best.value || selected === best.value);
+  const isCurrent = isSelected && active;
   const line = report ? detectedLine(report) : null;
 
   const apply = async (candidate: AdvisorCandidate) => {
@@ -156,7 +157,7 @@ export function StrategyAdvisor({
                     ) : (
                       <Icon name="bolt-circle-bold" size={13} />
                     )}
-                    {active ? "Применить" : "Применить и включить"}
+                    {active ? "Применить" : isSelected ? "Включить защиту" : "Применить и включить"}
                   </Button>
                 )}
                 <span className="text-[11.5px] text-muted-foreground">
@@ -164,7 +165,9 @@ export function StrategyAdvisor({
                     ? "это текущая стратегия"
                     : active
                       ? "без остановки защиты"
-                      : "защита запустится сразу"}
+                      : isSelected
+                        ? "стратегия уже выбрана"
+                        : "защита запустится сразу"}
                 </span>
               </div>
             </div>

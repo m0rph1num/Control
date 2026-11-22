@@ -565,9 +565,13 @@ async fn run_one(
         },
         "https" => {
             let result = tokio::task::spawn_blocking(|| -> Result<u16, String> {
-                match ureq::get("https://api.github.com/repos/Flowseal/zapret-discord-youtube")
+                let agent = ureq::AgentBuilder::new()
+                    .timeout_connect(Duration::from_secs(8))
+                    .timeout(Duration::from_secs(12))
+                    .build();
+                match agent
+                    .get("https://api.github.com/repos/Flowseal/zapret-discord-youtube")
                     .set("User-Agent", "Control-App")
-                    .timeout(Duration::from_secs(8))
                     .call()
                 {
                     Ok(response) => Ok(response.status()),
@@ -582,9 +586,13 @@ async fn run_one(
                     format!("GitHub ответил HTTP {code}"),
                     "Сервер доступен, но вернул нестандартный код",
                 ),
+                Ok(Err(e)) if is_timeout(&e) => err(
+                    "HTTPS-запрос не выполнен: таймаут",
+                    "Провайдер блокирует GitHub. Включите защиту zapret или VPN, затем повторите",
+                ),
                 Ok(Err(e)) => err(
                     "HTTPS-запрос не выполнен",
-                    format!("{e}. Возможна блокировка или отсутствие интернета"),
+                    format!("{e}. Включите защиту zapret или VPN, затем повторите"),
                 ),
                 Err(e) => err(
                     "HTTPS-проверка завершилась аварийно",
@@ -674,6 +682,15 @@ fn unknown(
     hint: impl Into<String>,
 ) -> (CheckStatus, String, Option<String>) {
     (CheckStatus::Error, detail.into(), Some(hint.into()))
+}
+
+fn is_timeout(error: &str) -> bool {
+    let lower = error.to_lowercase();
+    lower.contains("timeout")
+        || lower.contains("timed out")
+        || lower.contains("10060")
+        || lower.contains("10054")
+        || lower.contains("connection failed")
 }
 
 const CHECK_TIMEOUT: Duration = Duration::from_secs(30);

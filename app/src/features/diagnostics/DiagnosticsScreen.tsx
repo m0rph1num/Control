@@ -135,7 +135,9 @@ export function DiagnosticsScreen() {
 
   const installService = async () => {
     setServiceBusy("install");
-    const t = toast.loading("Устанавливаю службу…", { description: "Подтвердите запрос UAC" });
+    const t = toast.loading("Устанавливаю службу…", {
+      description: "Создаю и запускаю системную службу",
+    });
     try {
       const res = await api.serviceInstall();
       setService(await api.serviceStatus());
@@ -152,7 +154,9 @@ export function DiagnosticsScreen() {
 
   const removeService = async () => {
     setServiceBusy("remove");
-    const t = toast.loading("Удаляю службу…", { description: "Подтвердите запрос UAC" });
+    const t = toast.loading("Удаляю службу…", {
+      description: "Останавливаю и удаляю системную службу",
+    });
     try {
       await api.serviceRemove();
       setService(await api.serviceStatus());
@@ -426,7 +430,7 @@ export function DiagnosticsScreen() {
               <p className="text-[13px] font-medium leading-[1.4]">zapret как служба Windows</p>
               <p className="text-caption mt-1.5 leading-relaxed text-muted-foreground">
                 Отдельный автозапуск zapret: работает без окна Control и стартует вместе с Windows.
-                Установка и удаление требуют UAC.
+                Установка и удаление выполняются с правами администратора.
               </p>
             </div>
           </div>
@@ -469,7 +473,7 @@ export function DiagnosticsScreen() {
         onOpenChange={setConfirmInstall}
         size="sm"
         title="Включить автозапуск zapret"
-        description="Действие выполнится с правами администратора (запрос UAC): будет создана и запущена системная служба zapret. Она будет стартовать вместе с Windows независимо от Control."
+        description="Действие выполнится с правами администратора: будет создана и запущена системная служба zapret. Она будет стартовать вместе с Windows независимо от Control."
         footer={
           <>
             <Button variant="ghost" onClick={() => setConfirmInstall(false)}>

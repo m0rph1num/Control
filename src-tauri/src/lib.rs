@@ -10,6 +10,68 @@ use tauri::{Manager, WebviewWindowBuilder};
 
 pub use errors::AppError;
 
+#[cfg(windows)]
+mod single_instance {
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::{
+        GetLastError, SetLastError, ERROR_ALREADY_EXISTS, ERROR_SUCCESS,
+    };
+    use windows::Win32::System::Threading::CreateMutexW;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        FindWindowW, IsIconic, SetForegroundWindow, ShowWindow, SwitchToThisWindow, SW_RESTORE,
+        SW_SHOW,
+    };
+
+    const MUTEX_NAME: &str = "Local\\Control-single-instance";
+    const WINDOW_TITLE: &str = "Control";
+
+    fn wide(value: &str) -> Vec<u16> {
+        value.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    pub fn acquire() -> bool {
+        let name = wide(MUTEX_NAME);
+        unsafe { SetLastError(ERROR_SUCCESS) };
+        match unsafe { CreateMutexW(None, false, PCWSTR::from_raw(name.as_ptr())) } {
+            Ok(handle) => {
+                if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+                    return false;
+                }
+                let _ = handle;
+                true
+            }
+            Err(_) => true,
+        }
+    }
+
+    pub fn focus_existing() {
+        let title = wide(WINDOW_TITLE);
+        let Ok(window) = (unsafe { FindWindowW(PCWSTR::null(), PCWSTR::from_raw(title.as_ptr())) })
+        else {
+            return;
+        };
+        unsafe {
+            if IsIconic(window).as_bool() {
+                let _ = ShowWindow(window, SW_RESTORE);
+            } else {
+                let _ = ShowWindow(window, SW_SHOW);
+            }
+            if !SetForegroundWindow(window).as_bool() {
+                SwitchToThisWindow(window, true);
+            }
+        }
+    }
+}
+
+#[cfg(not(windows))]
+mod single_instance {
+    pub fn acquire() -> bool {
+        true
+    }
+
+    pub fn focus_existing() {}
+}
+
 pub fn write_shortcut_helper() -> bool {
     services::toast::write_shortcut_helper()
 }
@@ -32,10 +94,19 @@ pub fn run() {
         "Control запущен"
     );
 
+    if !single_instance::acquire() {
+        tracing::info!("найден уже запущенный Control, завершаю второй экземпляр");
+        if !services::autostart::launched_minimized() {
+            single_instance::focus_existing();
+        }
+        return;
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             storage::settings::migrate_legacy_settings();
+            services::autostart::migrate_legacy();
             let sink: Arc<dyn services::events::EventSink> =
                 Arc::new(services::events::TauriEventSink::new(app.handle().clone()));
             let app_state: Arc<state::AppState> = Arc::new(state::AppState::new(

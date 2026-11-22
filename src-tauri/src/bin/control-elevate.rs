@@ -2,11 +2,30 @@ use serde_json::{json, Value};
 use std::io::Write;
 use std::path::Path;
 use std::process::Command;
+use std::time::{Duration, Instant};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
+#[cfg(windows)]
+use windows::Win32::System::Services::{
+    ChangeServiceConfig2W, ChangeServiceConfigW, CloseServiceHandle, ControlService,
+    CreateServiceW, DeleteService, OpenSCManagerW, OpenServiceW, QueryServiceStatusEx,
+    StartServiceW, ENUM_SERVICE_TYPE, SC_HANDLE, SC_MANAGER_CONNECT, SC_MANAGER_CREATE_SERVICE,
+    SC_STATUS_PROCESS_INFO, SERVICE_ALL_ACCESS, SERVICE_AUTO_START, SERVICE_CONFIG_DESCRIPTION,
+    SERVICE_CONTROL_STOP, SERVICE_DEMAND_START, SERVICE_DESCRIPTIONW, SERVICE_DISABLED,
+    SERVICE_ERROR, SERVICE_ERROR_NORMAL, SERVICE_KERNEL_DRIVER, SERVICE_NO_CHANGE,
+    SERVICE_QUERY_STATUS, SERVICE_RUNNING, SERVICE_START, SERVICE_START_PENDING,
+    SERVICE_START_TYPE, SERVICE_STATUS, SERVICE_STATUS_PROCESS, SERVICE_STOP, SERVICE_STOPPED,
+    SERVICE_STOP_PENDING, SERVICE_WIN32_OWN_PROCESS, SERVICE_WIN32_SHARE_PROCESS,
+};
+
+#[cfg(windows)]
+use windows::core::PCWSTR;
+
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+const START_TIMEOUT: Duration = Duration::from_secs(20);
+const STOP_TIMEOUT: Duration = Duration::from_secs(12);
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -63,10 +82,11 @@ fn run(args: &[String]) -> i32 {
     let mut failed = false;
     if let Some(steps) = plan["steps"].as_array() {
         for step in steps {
-            let step_report = execute_step(step);
-            if !step_report["ok"].as_bool().unwrap_or(false)
-                && !step["ignore_failure"].as_bool().unwrap_or(false)
-            {
+            let ignored = step["ignore_failure"].as_bool().unwrap_or(false);
+            let mut step_report = execute_step(step);
+            let ok = step_report["ok"].as_bool().unwrap_or(false);
+            step_report["ignored"] = json!(ignored && !ok);
+            if !ok && !ignored {
                 failed = true;
             }
             report["steps"].as_array_mut().unwrap().push(step_report);
@@ -96,42 +116,49 @@ fn is_admin_process() -> bool {
     }
 }
 
+#[derive(Debug)]
+struct StepFailure {
+    exit_code: Option<i32>,
+    reason: String,
+    detail: String,
+}
+
+impl StepFailure {
+    fn new(reason: impl Into<String>, exit_code: Option<i32>, detail: impl Into<String>) -> Self {
+        Self {
+            exit_code,
+            reason: reason.into(),
+            detail: detail.into(),
+        }
+    }
+}
+
 fn execute_step(step: &Value) -> Value {
     let action = step["action"].as_str().unwrap_or_default();
-    let result = match action {
+    let result: Result<(Option<i32>, String), StepFailure> = match action {
         "copy_if_absent" => copy_if_absent(step),
-        "service_create" => sc_create(step),
-        "service_start" => run_simple("sc", &["start", &name(step)]),
-        "service_stop" => run_simple("sc", &["stop", &name(step)]),
-        "service_delete" => run_simple("sc", &["delete", &name(step)]),
+        "service_upsert" | "service_create" => service_upsert(step),
+        "service_start" => service_start(step),
+        "service_stop" => service_stop(step),
+        "service_delete" => service_delete(step),
         "reg_set" => reg_set(step),
         "legacy_autostart_cleanup" => legacy_cleanup(),
-        _ => Err(("UNKNOWN_ACTION".into(), "unknown action".into())),
+        _ => Err(StepFailure::new("UNKNOWN_ACTION", None, "unknown action")),
     };
     match result {
         Ok((code, tail)) => json!({
             "action": action,
-            "ok": is_benign(action, code),
-            "exitCode": code,
-            "outputTail": tail,
+            "ok": true,
+            "exit_code": code,
+            "output_tail": tail,
         }),
-        Err((reason, tail)) => json!({
-            "action": action, "ok": false, "exitCode": null,
-            "outputTail": tail, "reason": reason,
+        Err(failure) => json!({
+            "action": action,
+            "ok": false,
+            "exit_code": failure.exit_code,
+            "output_tail": failure.detail,
+            "reason": failure.reason,
         }),
-    }
-}
-
-fn is_benign(action: &str, code: i32) -> bool {
-    if code == 0 {
-        return true;
-    }
-    match action {
-        "service_start" => code == 1056,
-        "service_stop" => matches!(code, 1060 | 1062),
-        "service_delete" => matches!(code, 1060 | 1072),
-        "service_create" => code == 1073,
-        _ => false,
     }
 }
 
@@ -139,110 +166,55 @@ fn name(step: &Value) -> String {
     step["name"].as_str().unwrap_or_default().to_string()
 }
 
-fn copy_if_absent(step: &Value) -> Result<(i32, String), (String, String)> {
+fn copy_if_absent(step: &Value) -> Result<(Option<i32>, String), StepFailure> {
     let from = step["from"]
         .as_str()
-        .ok_or(("BAD_PARAMS".to_string(), "from missing".to_string()))?;
+        .ok_or_else(|| StepFailure::new("BAD_PARAMS", None, "from missing"))?;
     let to = step["to"]
         .as_str()
-        .ok_or(("BAD_PARAMS".to_string(), "to missing".to_string()))?;
-    if Path::new(from).is_file() {
-        let target_ok = std::fs::metadata(to)
-            .map(|m| m.is_file() && m.len() > 0)
-            .unwrap_or(false);
-        if target_ok {
-            return Ok((0, "already present".into()));
-        }
-    } else {
-        return Err(("SOURCE_MISSING".into(), format!("{from} not found")));
+        .ok_or_else(|| StepFailure::new("BAD_PARAMS", None, "to missing"))?;
+    if !Path::new(from).is_file() {
+        return Err(StepFailure::new(
+            "SOURCE_MISSING",
+            None,
+            format!("{from} not found"),
+        ));
+    }
+    let target_ok = std::fs::metadata(to)
+        .map(|m| m.is_file() && m.len() > 0)
+        .unwrap_or(false);
+    if target_ok {
+        return Ok((Some(0), "already present".into()));
     }
     std::fs::copy(from, to)
-        .map(|_| (0, "copied".into()))
-        .map_err(|e| ("COPY_FAILED".into(), format!("{from} -> {to}: {e}")))
+        .map(|_| (Some(0), "copied".into()))
+        .map_err(|e| StepFailure::new("COPY_FAILED", None, format!("{from} -> {to}: {e}")))
 }
 
-fn service_exists(svc_name: &str) -> bool {
-    let mut cmd = Command::new("sc");
-    cmd.args(["query", svc_name])
-        .creation_flags(CREATE_NO_WINDOW)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    matches!(cmd.status(), Ok(status) if status.code() == Some(0))
-}
-
-fn sc_create(step: &Value) -> Result<(i32, String), (String, String)> {
-    let svc_name = name(step);
-    if svc_name.is_empty() {
-        return Err(("BAD_PARAMS".into(), "service name missing".into()));
-    }
-    if step["start_if_absent_only"].as_bool().unwrap_or(false) && service_exists(&svc_name) {
-        return Ok((0, "service already exists".into()));
-    }
-
-    let mut last: Result<(i32, String), (String, String)> = Err((
-        "SERVICE_NOT_CREATED".into(),
-        "service create did not run".into(),
-    ));
-    for attempt in 0..4 {
-        last = create_service(step);
-        match &last {
-            Ok((1075, _)) => {
-                std::thread::sleep(std::time::Duration::from_millis(650 * (attempt + 1)));
-            }
-            _ => return last,
-        }
-    }
-    last
-}
-
-fn create_service(step: &Value) -> Result<(i32, String), (String, String)> {
-    let svc_name = name(step);
-    let bin_path = step["bin_path"]
-        .as_str()
-        .ok_or(("BAD_PARAMS".to_string(), "bin_path missing".to_string()))?;
-    let mut cmd = Command::new("sc");
-    cmd.arg("create").arg(&svc_name);
-
-    cmd.raw_arg(format!("binPath= {bin_path}"));
-    if let Some(display) = step["display_name"].as_str() {
-        cmd.raw_arg(format!("DisplayName= \"{display}\""));
-    }
-    if let Some(description) = step["description"].as_str() {
-        cmd.raw_arg(format!("description= \"{description}\""));
-    }
-    if let Some(t) = step["service_type"].as_str() {
-        cmd.raw_arg(format!("type= {t}"));
-    }
-    if let Some(start) = step["start"].as_str() {
-        cmd.raw_arg(format!("start= {start}"));
-    }
-    cmd.creation_flags(CREATE_NO_WINDOW);
-    run_command(&mut cmd)
-}
-
-fn reg_set(step: &Value) -> Result<(i32, String), (String, String)> {
+fn reg_set(step: &Value) -> Result<(Option<i32>, String), StepFailure> {
     let key = step["key"]
         .as_str()
-        .ok_or(("BAD_PARAMS".to_string(), "key missing".to_string()))?;
+        .ok_or_else(|| StepFailure::new("BAD_PARAMS", None, "key missing"))?;
     let value_name = step["value_name"]
         .as_str()
-        .ok_or(("BAD_PARAMS".to_string(), "value_name missing".to_string()))?;
+        .ok_or_else(|| StepFailure::new("BAD_PARAMS", None, "value_name missing"))?;
     let data = step["data"]
         .as_str()
-        .ok_or(("BAD_PARAMS".to_string(), "data missing".to_string()))?;
+        .ok_or_else(|| StepFailure::new("BAD_PARAMS", None, "data missing"))?;
+    let value_type = step["value_type"].as_str().unwrap_or("REG_SZ");
     let mut cmd = Command::new("reg");
-    cmd.args(["add", key, "/v", value_name]);
-    cmd.raw_arg(format!(
-        "/t {}",
-        step["value_type"].as_str().unwrap_or("REG_SZ")
-    ));
-    cmd.raw_arg(format!("/d \"{data}\""));
-    cmd.arg("/f");
-    cmd.creation_flags(CREATE_NO_WINDOW);
-    run_command(&mut cmd)
+    cmd.args([
+        "add", key, "/v", value_name, "/t", value_type, "/d", data, "/f",
+    ])
+    .creation_flags(CREATE_NO_WINDOW);
+    match run_command(&mut cmd) {
+        Ok((0, tail)) => Ok((Some(0), tail)),
+        Ok((code, tail)) => Err(StepFailure::new("REG_SET_FAILED", Some(code), tail)),
+        Err(e) => Err(StepFailure::new("SPAWN_FAILED", None, e)),
+    }
 }
 
-fn legacy_cleanup() -> Result<(i32, String), (String, String)> {
+fn legacy_cleanup() -> Result<(Option<i32>, String), StepFailure> {
     let _ = Command::new("schtasks")
         .args(["/Delete", "/TN", "Control-Zapret", "/F"])
         .creation_flags(CREATE_NO_WINDOW)
@@ -254,7 +226,7 @@ fn legacy_cleanup() -> Result<(i32, String), (String, String)> {
             let _ = std::fs::remove_file(dir.join(name));
         }
     });
-    Ok((0, "legacy cleaned".into()))
+    Ok((Some(0), "legacy cleaned".into()))
 }
 
 fn control_app_dir(app_data: &str, f: impl Fn(&Path)) {
@@ -265,13 +237,7 @@ fn control_app_dir(app_data: &str, f: impl Fn(&Path)) {
     f(&dir);
 }
 
-fn run_simple(program: &str, args: &[&str]) -> Result<(i32, String), (String, String)> {
-    let mut cmd = Command::new(program);
-    cmd.args(args).creation_flags(CREATE_NO_WINDOW);
-    run_command(&mut cmd)
-}
-
-fn run_command(cmd: &mut Command) -> Result<(i32, String), (String, String)> {
+fn run_command(cmd: &mut Command) -> Result<(i32, String), String> {
     cmd.stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     match cmd.output() {
@@ -285,12 +251,372 @@ fn run_command(cmd: &mut Command) -> Result<(i32, String), (String, String)> {
                 (true, false) => stdout,
                 (true, true) => String::new(),
             };
-            let tail = combined.chars().rev().take(400).collect::<String>();
-            let tail = tail.chars().rev().collect::<String>();
-            Ok((code, tail))
+            Ok((code, tail(&combined, 400)))
         }
-        Err(e) => Err(("SPAWN_FAILED".into(), e.to_string())),
+        Err(e) => Err(e.to_string()),
     }
+}
+
+fn tail(text: &str, limit: usize) -> String {
+    let count = text.chars().count();
+    if count <= limit {
+        return text.to_string();
+    }
+    text.chars().skip(count - limit).collect()
+}
+
+#[cfg(windows)]
+mod win_service {
+    use super::*;
+
+    fn wide(value: &str) -> Vec<u16> {
+        value.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    fn error_code(error: &windows::core::Error) -> i32 {
+        let code = error.code().0 as u32;
+        if code & 0xFFFF_0000 == 0x8007_0000 {
+            (code & 0xFFFF) as i32
+        } else {
+            code as i32
+        }
+    }
+
+    pub fn error_text(code: i32) -> String {
+        std::io::Error::from_raw_os_error(code).to_string()
+    }
+
+    fn failure(reason: &str, error: &windows::core::Error) -> StepFailure {
+        let code = error_code(error);
+        StepFailure::new(reason, Some(code), format!("{code}: {}", error_text(code)))
+    }
+
+    struct Scm(SC_HANDLE);
+
+    impl Scm {
+        fn open(access: u32) -> Result<Self, StepFailure> {
+            unsafe {
+                OpenSCManagerW(PCWSTR::null(), PCWSTR::null(), access)
+                    .map(Self)
+                    .map_err(|e| failure("SCM_OPEN_FAILED", &e))
+            }
+        }
+
+        fn service(&self, name: &str, access: u32) -> Result<ScHandle, windows::core::Error> {
+            let name = wide(name);
+            unsafe { OpenServiceW(self.0, PCWSTR::from_raw(name.as_ptr()), access).map(ScHandle) }
+        }
+    }
+
+    impl Drop for Scm {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = CloseServiceHandle(self.0);
+            }
+        }
+    }
+
+    struct ScHandle(SC_HANDLE);
+
+    impl Drop for ScHandle {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = CloseServiceHandle(self.0);
+            }
+        }
+    }
+
+    fn start_type(raw: Option<&str>) -> SERVICE_START_TYPE {
+        match raw.unwrap_or("demand").to_ascii_lowercase().as_str() {
+            "auto" | "automatic" => SERVICE_AUTO_START,
+            "disabled" => SERVICE_DISABLED,
+            _ => SERVICE_DEMAND_START,
+        }
+    }
+
+    fn service_type(raw: Option<&str>) -> ENUM_SERVICE_TYPE {
+        match raw.unwrap_or("win32").to_ascii_lowercase().as_str() {
+            "kernel" | "driver" => SERVICE_KERNEL_DRIVER,
+            "share" | "share_process" => SERVICE_WIN32_SHARE_PROCESS,
+            _ => SERVICE_WIN32_OWN_PROCESS,
+        }
+    }
+
+    fn set_description(handle: SC_HANDLE, description: &str) -> Result<(), windows::core::Error> {
+        let mut buffer = wide(description);
+        let info = SERVICE_DESCRIPTIONW {
+            lpDescription: windows::core::PWSTR::from_raw(buffer.as_mut_ptr()),
+        };
+        unsafe {
+            ChangeServiceConfig2W(
+                handle,
+                SERVICE_CONFIG_DESCRIPTION,
+                Some(&info as *const _ as *const core::ffi::c_void),
+            )
+        }
+    }
+
+    pub fn upsert(step: &Value) -> Result<(Option<i32>, String), StepFailure> {
+        let svc_name = name(step);
+        if svc_name.is_empty() {
+            return Err(StepFailure::new("BAD_PARAMS", None, "service name missing"));
+        }
+        let bin_path = step["bin_path"]
+            .as_str()
+            .ok_or_else(|| StepFailure::new("BAD_PARAMS", None, "bin_path missing"))?;
+        let display = step["display_name"].as_str().unwrap_or(&svc_name);
+        let description = step["description"].as_str();
+        let start_only = step["start_if_absent_only"].as_bool().unwrap_or(false);
+        let svc_name_w = wide(&svc_name);
+        let display_w = wide(display);
+        let bin_path_w = wide(bin_path);
+        let type_ = service_type(step["service_type"].as_str());
+        let start_ = start_type(step["start"].as_str());
+
+        let scm = Scm::open(SC_MANAGER_CONNECT | SC_MANAGER_CREATE_SERVICE)?;
+
+        match scm.service(&svc_name, SERVICE_ALL_ACCESS) {
+            Ok(existing) => {
+                if start_only {
+                    return Ok((Some(0), "service already exists".into()));
+                }
+                unsafe {
+                    ChangeServiceConfigW(
+                        existing.0,
+                        type_,
+                        start_,
+                        SERVICE_ERROR(SERVICE_NO_CHANGE),
+                        PCWSTR::from_raw(bin_path_w.as_ptr()),
+                        PCWSTR::null(),
+                        None,
+                        PCWSTR::null(),
+                        PCWSTR::null(),
+                        PCWSTR::null(),
+                        PCWSTR::from_raw(display_w.as_ptr()),
+                    )
+                    .map_err(|e| failure("SERVICE_UPDATE_FAILED", &e))?;
+                }
+                if let Some(description) = description {
+                    set_description(existing.0, description)
+                        .map_err(|e| failure("SERVICE_DESCRIPTION_FAILED", &e))?;
+                }
+                Ok((Some(0), "service updated".into()))
+            }
+            Err(error) if error_code(&error) == 1060 => {
+                let handle = unsafe {
+                    CreateServiceW(
+                        scm.0,
+                        PCWSTR::from_raw(svc_name_w.as_ptr()),
+                        PCWSTR::from_raw(display_w.as_ptr()),
+                        SERVICE_ALL_ACCESS,
+                        type_,
+                        start_,
+                        SERVICE_ERROR_NORMAL,
+                        PCWSTR::from_raw(bin_path_w.as_ptr()),
+                        PCWSTR::null(),
+                        None,
+                        PCWSTR::null(),
+                        PCWSTR::null(),
+                        PCWSTR::null(),
+                    )
+                };
+                let handle = match handle {
+                    Ok(handle) => ScHandle(handle),
+                    Err(error) if error_code(&error) == 1073 => {
+                        return Ok((Some(0), "service appeared".into()))
+                    }
+                    Err(error) => return Err(failure("SERVICE_CREATE_FAILED", &error)),
+                };
+                if let Some(description) = description {
+                    set_description(handle.0, description)
+                        .map_err(|e| failure("SERVICE_DESCRIPTION_FAILED", &e))?;
+                }
+                Ok((Some(0), "service created".into()))
+            }
+            Err(error) if error_code(&error) == 1072 => Err(StepFailure::new(
+                "SERVICE_PENDING_DELETE",
+                Some(1072),
+                "служба помечена на удаление после прошлой попытки",
+            )),
+            Err(error) => Err(failure("SERVICE_OPEN_FAILED", &error)),
+        }
+    }
+
+    fn read_status(handle: SC_HANDLE) -> Result<SERVICE_STATUS_PROCESS, StepFailure> {
+        let mut status = SERVICE_STATUS_PROCESS::default();
+        let mut needed = 0u32;
+        unsafe {
+            QueryServiceStatusEx(
+                handle,
+                SC_STATUS_PROCESS_INFO,
+                Some(std::slice::from_raw_parts_mut(
+                    &mut status as *mut _ as *mut u8,
+                    std::mem::size_of::<SERVICE_STATUS_PROCESS>(),
+                )),
+                &mut needed,
+            )
+            .map_err(|e| failure("SERVICE_QUERY_FAILED", &e))?;
+        }
+        Ok(status)
+    }
+
+    pub fn start(step: &Value) -> Result<(Option<i32>, String), StepFailure> {
+        let svc_name = name(step);
+        let waited = step["wait_ms"]
+            .as_u64()
+            .map(Duration::from_millis)
+            .unwrap_or(START_TIMEOUT);
+        let scm = Scm::open(SC_MANAGER_CONNECT)?;
+        let service = match scm.service(&svc_name, SERVICE_START | SERVICE_QUERY_STATUS) {
+            Ok(service) => service,
+            Err(error) if error_code(&error) == 1060 => {
+                return Err(StepFailure::new(
+                    "SERVICE_NOT_FOUND",
+                    Some(1060),
+                    "служба не найдена: создание не выполнилось",
+                ))
+            }
+            Err(error) if error_code(&error) == 1072 => {
+                return Err(StepFailure::new(
+                    "SERVICE_PENDING_DELETE",
+                    Some(1072),
+                    "служба помечена на удаление",
+                ))
+            }
+            Err(error) => return Err(failure("SERVICE_OPEN_FAILED", &error)),
+        };
+
+        if let Err(error) = unsafe { StartServiceW(service.0, None) } {
+            let code = error_code(&error);
+            if code != 1056 {
+                return Err(failure("SERVICE_START_FAILED", &error));
+            }
+        }
+
+        let deadline = Instant::now() + waited;
+        loop {
+            let status = read_status(service.0)?;
+            match status.dwCurrentState {
+                SERVICE_RUNNING => {
+                    return Ok((Some(0), format!("running, pid {}", status.dwProcessId)))
+                }
+                SERVICE_STOPPED => {
+                    let code = status.dwWin32ExitCode;
+                    let text = if code == 0 {
+                        "процесс службы завершился сразу после запуска".to_string()
+                    } else {
+                        format!(
+                            "процесс службы завершился: {code}: {}",
+                            error_text(code as i32)
+                        )
+                    };
+                    return Err(StepFailure::new("SERVICE_EXITED", Some(code as i32), text));
+                }
+                _ => {}
+            }
+            if Instant::now() >= deadline {
+                return Err(StepFailure::new(
+                    "SERVICE_START_TIMEOUT",
+                    Some(1053),
+                    "служба не перешла в состояние «работает» за отведённое время",
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(150));
+        }
+    }
+
+    pub fn stop(step: &Value) -> Result<(Option<i32>, String), StepFailure> {
+        let svc_name = name(step);
+        let scm = Scm::open(SC_MANAGER_CONNECT)?;
+        let service = match scm.service(&svc_name, SERVICE_STOP | SERVICE_QUERY_STATUS) {
+            Ok(service) => service,
+            Err(error) if matches!(error_code(&error), 1060 | 1072) => {
+                return Ok((Some(0), "service absent".into()))
+            }
+            Err(error) => return Err(failure("SERVICE_OPEN_FAILED", &error)),
+        };
+        let mut status = SERVICE_STATUS::default();
+        if let Err(error) = unsafe { ControlService(service.0, SERVICE_CONTROL_STOP, &mut status) }
+        {
+            let code = error_code(&error);
+            if code == 1062 {
+                return Ok((Some(0), "already stopped".into()));
+            }
+            return Err(failure("SERVICE_STOP_FAILED", &error));
+        }
+        let deadline = Instant::now() + STOP_TIMEOUT;
+        loop {
+            let status = read_status(service.0)?;
+            match status.dwCurrentState {
+                SERVICE_STOPPED => return Ok((Some(0), "stopped".into())),
+                SERVICE_STOP_PENDING | SERVICE_START_PENDING => {}
+                _ => return Ok((Some(0), "stop requested".into())),
+            }
+            if Instant::now() >= deadline {
+                return Err(StepFailure::new(
+                    "SERVICE_STOP_TIMEOUT",
+                    Some(1053),
+                    "служба не остановилась за отведённое время",
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(150));
+        }
+    }
+
+    pub fn delete(step: &Value) -> Result<(Option<i32>, String), StepFailure> {
+        let svc_name = name(step);
+        let scm = Scm::open(SC_MANAGER_CONNECT)?;
+        let service = match scm.service(&svc_name, 0x0001_0000) {
+            Ok(service) => service,
+            Err(error) if matches!(error_code(&error), 1060 | 1072) => {
+                return Ok((Some(0), "service absent".into()))
+            }
+            Err(error) => return Err(failure("SERVICE_OPEN_FAILED", &error)),
+        };
+        unsafe { DeleteService(service.0) }
+            .map(|_| (Some(0), "deleted".into()))
+            .map_err(|e| failure("SERVICE_DELETE_FAILED", &e))
+    }
+}
+
+#[cfg(windows)]
+fn service_upsert(step: &Value) -> Result<(Option<i32>, String), StepFailure> {
+    win_service::upsert(step)
+}
+
+#[cfg(windows)]
+fn service_start(step: &Value) -> Result<(Option<i32>, String), StepFailure> {
+    win_service::start(step)
+}
+
+#[cfg(windows)]
+fn service_stop(step: &Value) -> Result<(Option<i32>, String), StepFailure> {
+    win_service::stop(step)
+}
+
+#[cfg(windows)]
+fn service_delete(step: &Value) -> Result<(Option<i32>, String), StepFailure> {
+    win_service::delete(step)
+}
+
+#[cfg(not(windows))]
+fn service_upsert(_: &Value) -> Result<(Option<i32>, String), StepFailure> {
+    Err(StepFailure::new("UNSUPPORTED", None, "windows only"))
+}
+
+#[cfg(not(windows))]
+fn service_start(_: &Value) -> Result<(Option<i32>, String), StepFailure> {
+    Err(StepFailure::new("UNSUPPORTED", None, "windows only"))
+}
+
+#[cfg(not(windows))]
+fn service_stop(_: &Value) -> Result<(Option<i32>, String), StepFailure> {
+    Err(StepFailure::new("UNSUPPORTED", None, "windows only"))
+}
+
+#[cfg(not(windows))]
+fn service_delete(_: &Value) -> Result<(Option<i32>, String), StepFailure> {
+    Err(StepFailure::new("UNSUPPORTED", None, "windows only"))
 }
 
 fn write_report(path: &Path, report: &Value) {

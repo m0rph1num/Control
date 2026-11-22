@@ -84,7 +84,18 @@ pub async fn protection_start(
     let (strategy_path, dir, game_mode) = resolve_strategy(&state, &strategy_value).await?;
 
     persist_last_strategy(&state, &strategy_value).await;
-    state.control.start(strategy_path, dir, game_mode).await
+    let result = state.control.start(strategy_path, dir, game_mode).await;
+    match &result {
+        Ok(detail) => {
+            tracing::info!(strategy = %strategy_value, detail = %detail, "защита запущена")
+        }
+        Err(error) => tracing::warn!(
+            strategy = %strategy_value,
+            error = %error.user_message,
+            "не удалось запустить защиту"
+        ),
+    }
+    result
 }
 
 #[tauri::command]
@@ -94,10 +105,23 @@ pub async fn protection_apply(
 ) -> Result<bool, AppError> {
     let (strategy_path, dir, game_mode) = resolve_strategy(&state, &strategy_value).await?;
     persist_last_strategy(&state, &strategy_value).await;
-    state
+    let result = state
         .control
         .reconfigure_with(strategy_path, dir, game_mode)
-        .await
+        .await;
+    match &result {
+        Ok(live) => tracing::info!(
+            strategy = %strategy_value,
+            live = *live,
+            "стратегия защиты применена"
+        ),
+        Err(error) => tracing::warn!(
+            strategy = %strategy_value,
+            error = %error.user_message,
+            "не удалось применить стратегию"
+        ),
+    }
+    result
 }
 
 async fn resolve_strategy(
@@ -165,7 +189,12 @@ async fn persist_last_strategy(state: &AppState, value: &str) {
 
 #[tauri::command]
 pub async fn protection_stop(state: State<'_, Arc<AppState>>) -> Result<String, AppError> {
-    state.control.stop().await
+    let result = state.control.stop().await;
+    match &result {
+        Ok(detail) => tracing::info!(detail = %detail, "защита остановлена"),
+        Err(error) => tracing::warn!(error = %error.user_message, "не удалось остановить защиту"),
+    }
+    result
 }
 
 #[tauri::command]
@@ -209,6 +238,7 @@ pub async fn settings_update(
     }
     crate::storage::settings::write_settings_checked(&state.locks, &snapshot, content).await
 }
+
 #[tauri::command]
 pub async fn flowseal_config_get() -> Result<serde_json::Value, AppError> {
     crate::storage::settings::read_flowseal_config()
@@ -544,6 +574,20 @@ async fn run_service_elevation(
             .with_details(serde_json::json!({ "error": e.to_string() }))
     })?;
 
+    match &result {
+        Ok(report) => tracing::info!(
+            ok = report.ok,
+            report = %serde_json::to_string(report).unwrap_or_default(),
+            "отчёт повышения привилегий"
+        ),
+        Err(error) => tracing::warn!(
+            code = %error.code,
+            message = %error.user_message,
+            details = ?error.details,
+            "повышение привилегий не выполнено"
+        ),
+    }
+
     snapshot.revision += 1;
     let fold = |snapshot: &mut crate::services::operations::OperationSnapshot,
                 report: Result<crate::services::elevation::ElevationReport, AppError>|
@@ -641,14 +685,36 @@ async fn wait_service(
 fn describe_elevation_failure(
     report: &crate::services::elevation::ElevationReport,
 ) -> (String, serde_json::Value) {
-    let Some(step) = report.steps.iter().find(|step| !step.ok) else {
+    let details = serde_json::to_value(report).unwrap_or_default();
+    if let Some(error) = report.error.as_deref() {
+        let message = match error {
+            "NOT_ADMIN" => {
+                "Компонент установки запустился без прав администратора. Перезапустите Control и подтвердите запрос UAC"
+            }
+            "BAD_PLAN" | "UNSUPPORTED_PLAN_VERSION" => {
+                "Внутренняя ошибка плана установки. Перезапустите Control"
+            }
+            "HELPER_PANIC" => "Компонент установки завершился аварийно. Перезапустите Control",
+            _ => return (
+                "Установка не выполнена. Проверьте журнал Control и повторите".into(),
+                details,
+            ),
+        };
+        return (message.to_string(), details);
+    }
+    let Some(step) = report.steps.iter().find(|step| !step.ok && !step.ignored) else {
         return (
-            "Сценарий с повышением привилегий завершился с ошибкой. Перезагрузите компьютер и повторите".into(),
-            serde_json::to_value(report).unwrap_or_default(),
+            "Установка не подтвердила результат. Повторите попытку".into(),
+            details,
         );
     };
     let label = elevation_action_label(&step.action);
-    let hint = elevation_failure_hint(&step.action, step.exit_code, step.output_tail.as_deref());
+    let hint = elevation_failure_hint(
+        &step.action,
+        step.reason.as_deref(),
+        step.exit_code,
+        step.output_tail.as_deref(),
+    );
     let message = match step.exit_code {
         Some(code) if !hint.is_empty() => {
             format!("Не удалось выполнить: {label} (код {code}). {hint}")
@@ -657,12 +723,12 @@ fn describe_elevation_failure(
         None if !hint.is_empty() => format!("Не удалось выполнить: {label}. {hint}"),
         None => format!("Не удалось выполнить: {label}"),
     };
-    (message, serde_json::to_value(report).unwrap_or_default())
+    (message, details)
 }
 
 fn elevation_action_label(action: &str) -> &'static str {
     match action {
-        "service_create" => "создание службы",
+        "service_upsert" | "service_create" => "создание службы",
         "service_start" => "запуск службы",
         "service_stop" => "остановка службы",
         "service_delete" => "удаление службы",
@@ -673,24 +739,46 @@ fn elevation_action_label(action: &str) -> &'static str {
     }
 }
 
-fn elevation_failure_hint(action: &str, code: Option<i32>, output: Option<&str>) -> String {
-    let known = match (action, code) {
-        ("service_create", Some(1075)) => {
+fn elevation_failure_hint(
+    action: &str,
+    reason: Option<&str>,
+    code: Option<i32>,
+    output: Option<&str>,
+) -> String {
+    let known = match (reason, action, code) {
+        (Some("SERVICE_PENDING_DELETE"), _, _) => {
+            "Служба помечена на удаление после прошлой попытки. Перезагрузите Windows (именно «Перезагрузка», не «Завершение работы») и повторите"
+        }
+        (Some("SERVICE_EXITED"), _, _) => {
+            "Служба создана, но winws.exe сразу завершился. Проверьте стратегию и драйвер WinDivert"
+        }
+        (Some("SERVICE_START_TIMEOUT"), _, _) => {
+            "Служба не перешла в состояние «работает». Проверьте антивирус и драйвер WinDivert"
+        }
+        (Some("SERVICE_STOP_TIMEOUT"), _, _) => {
+            "Служба не остановилась. Перезагрузите Windows и повторите"
+        }
+        (Some("SCM_OPEN_FAILED"), _, _) => {
+            "Не удалось открыть диспетчер служб. Запустите Control от имени администратора"
+        }
+        (Some("SERVICE_CREATE_FAILED"), _, Some(5)) => {
+            "Нет прав администратора — подтвердите запрос UAC"
+        }
+        (Some("SERVICE_CREATE_FAILED"), _, Some(1075)) => {
             "Служба ещё удаляется после прошлой попытки. Перезагрузите Windows и повторите"
         }
-        ("service_create", Some(1073)) => {
-            "Служба с таким именем уже существует. Перезагрузите Windows и повторите"
+        (Some("SERVICE_OPEN_FAILED"), _, Some(5)) => {
+            "Нет прав администратора — подтвердите запрос UAC"
         }
-        ("service_create", Some(5)) => "Нет прав администратора — подтвердите запрос UAC",
-        ("service_start", Some(1060)) => "Служба не найдена: создание не выполнилось",
-        ("service_start", Some(1067)) => {
+        (_, "service_start", Some(1060)) => "Служба не найдена: создание не выполнилось",
+        (_, "service_start", Some(1067)) => {
             "Служба завершилась с ошибкой. Проверьте WinDivert и выбранную стратегию"
         }
-        ("service_start", Some(2)) => {
+        (_, "service_start", Some(2)) => {
             "Система не смогла запустить winws.exe. Проверьте путь к файлу и антивирус"
         }
-        ("reg_set", Some(5)) => "Нет доступа к реестру — подтвердите запрос UAC",
-        ("copy_if_absent", _) => {
+        (_, "reg_set", Some(5)) => "Нет доступа к реестру — подтвердите запрос UAC",
+        (_, "copy_if_absent", _) => {
             "Проверьте, что антивирус не блокирует запись драйвера в System32\\drivers"
         }
         _ => "",
@@ -700,7 +788,7 @@ fn elevation_failure_hint(action: &str, code: Option<i32>, output: Option<&str>)
     }
     let tail = output.unwrap_or_default().trim();
     if tail.is_empty() {
-        "Попробуйте перезагрузить компьютер и повторить".to_string()
+        "Проверьте права администратора и антивирус, затем повторите".to_string()
     } else {
         tail.chars().take(180).collect()
     }

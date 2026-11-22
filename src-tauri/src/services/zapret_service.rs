@@ -122,7 +122,7 @@ pub fn service_install_plan_for(
             }),
         });
         steps.push(ElevationStep {
-            action: "service_create".into(),
+            action: "service_upsert".into(),
             params: serde_json::json!({
                 "name": WINDIVERT_SERVICE_NAME,
                 "bin_path": target_sys.to_string_lossy(),
@@ -142,11 +142,7 @@ pub fn service_install_plan_for(
         params: serde_json::json!({ "name": ZAPRET_SERVICE_NAME, "ignore_failure": true }),
     });
     steps.push(ElevationStep {
-        action: "service_delete".into(),
-        params: serde_json::json!({ "name": ZAPRET_SERVICE_NAME, "ignore_failure": true }),
-    });
-    steps.push(ElevationStep {
-        action: "service_create".into(),
+        action: "service_upsert".into(),
         params: serde_json::json!({
             "name": ZAPRET_SERVICE_NAME,
             "bin_path": bin_path_arg,
@@ -166,7 +162,7 @@ pub fn service_install_plan_for(
     });
     steps.push(ElevationStep {
         action: "service_start".into(),
-        params: serde_json::json!({ "name": ZAPRET_SERVICE_NAME }),
+        params: serde_json::json!({ "name": ZAPRET_SERVICE_NAME, "wait_ms": 20000 }),
     });
 
     Ok(ElevationPlan {
@@ -225,7 +221,7 @@ mod tests {
         let plan = service_install_plan_for(&dir, "").unwrap();
         let actions: Vec<&str> = plan.steps.iter().map(|s| s.action.as_str()).collect();
         assert!(actions.contains(&"copy_if_absent"));
-        assert!(actions.contains(&"service_create"));
+        assert!(actions.contains(&"service_upsert"));
         assert!(actions.contains(&"reg_set"));
         assert_eq!(plan.steps.last().unwrap().action, "service_start");
 
@@ -233,7 +229,7 @@ mod tests {
             .steps
             .iter()
             .rev()
-            .find(|s| s.action == "service_create")
+            .find(|s| s.action == "service_upsert")
             .unwrap();
         assert_eq!(create.params["name"], "zapret");
         assert!(create.params["bin_path"]

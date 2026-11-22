@@ -29,6 +29,14 @@ pub struct TgwsStatus {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exe_path: Option<String>,
     pub autostart: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
+}
+
+static START_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+
+fn start_lock() -> &'static tokio::sync::Mutex<()> {
+    START_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
 pub fn install_dir() -> Result<PathBuf, AppError> {
@@ -146,7 +154,52 @@ fn build_status(running: bool, pid: Option<u32>, exe: Option<PathBuf>) -> TgwsSt
         config_exists: cfg.is_some(),
         exe_path: exe.map(|p| p.to_string_lossy().into_owned()),
         autostart,
+        warning: if running { health_warning() } else { None },
     }
+}
+
+fn health_warning() -> Option<String> {
+    let path = log_path().ok()?;
+    let modified = std::fs::metadata(&path).ok()?.modified().ok()?;
+    if modified.elapsed().unwrap_or_default() > Duration::from_secs(180) {
+        return None;
+    }
+    let text = std::fs::read_to_string(&path).ok()?;
+    let recent: Vec<&str> = text.lines().rev().take(80).collect();
+    let joined = recent.join("\n");
+    if joined.contains("WinError 10048") || joined.contains("Address already in use") {
+        return Some(
+            "Порт занят другим процессом. Остановите TG WS Proxy и запустите снова".into(),
+        );
+    }
+    let cf_failed = joined.matches("CF proxy failed").count();
+    let dc_failed = joined.contains("no fallback available")
+        || joined.contains("WS pool unavailable")
+        || joined.contains("WS pool refill failed");
+    if cf_failed >= 2 && dc_failed {
+        return Some(
+            "Прокси работает, но не может достучаться до серверов Telegram. Включите защиту zapret: без неё провайдер блокирует соединения с DC и Cloudflare".into(),
+        );
+    }
+    None
+}
+
+async fn kill_ours(dir: &Path) -> usize {
+    let mut killed = 0;
+    for (pid, path) in find_processes() {
+        if !owns_process(path.as_deref(), dir) {
+            continue;
+        }
+        let out = tokio::process::Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .creation_flags(0x0800_0000)
+            .output()
+            .await;
+        if matches!(out, Ok(o) if o.status.success()) {
+            killed += 1;
+        }
+    }
+    killed
 }
 
 pub async fn status() -> TgwsStatus {
@@ -169,37 +222,19 @@ pub struct InstallResult {
 
 fn latest_asset_url() -> (String, String) {
     let fallback = ("v1.11.4".to_string(), RELEASE_URL.to_string());
-    let latest_url = format!("https://api.github.com/repos/{REPO}/releases/latest");
-    let resp = ureq::get(&latest_url)
-        .set("User-Agent", "Control-App")
-        .timeout(Duration::from_secs(15))
-        .call();
-    let Ok(resp) = resp else {
+    let Ok(release) = crate::services::github::latest(REPO) else {
         return fallback;
     };
-    let Ok(json) = resp.into_json::<serde_json::Value>() else {
-        return fallback;
+    let tag = if release.tag.is_empty() {
+        fallback.0
+    } else {
+        release.tag
     };
-    let tag = json
-        .get("tag_name")
-        .and_then(|v| v.as_str())
-        .unwrap_or("v1.11.4")
-        .to_string();
-    let url = json
-        .get("assets")
-        .and_then(|v| v.as_array())
-        .and_then(|assets| {
-            assets.iter().find_map(|a| {
-                let name = a.get("name").and_then(|v| v.as_str())?;
-                if name.eq_ignore_ascii_case(EXE_NAME) {
-                    a.get("browser_download_url")
-                        .and_then(|v| v.as_str())
-                        .map(str::to_string)
-                } else {
-                    None
-                }
-            })
-        })
+    let url = release
+        .assets
+        .iter()
+        .find(|asset| asset.name.eq_ignore_ascii_case(EXE_NAME))
+        .map(|asset| asset.url.clone())
         .unwrap_or(fallback.1);
     (tag, url)
 }
@@ -217,13 +252,27 @@ pub fn install_blocking(
             "Разрешены только https-ссылки",
         ));
     }
-    let resp = ureq::get(&url)
-        .set("User-Agent", "Control-App")
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(15))
         .timeout(Duration::from_secs(600))
+        .build();
+    let resp = agent
+        .get(&url)
+        .set("User-Agent", "Control-App")
         .call()
         .map_err(|e| {
-            AppError::new("NETWORK_ERROR", "Не удалось скачать TG WS Proxy")
-                .with_details(serde_json::json!({ "error": e.to_string(), "url": url }))
+            let text = e.to_string();
+            let lower = text.to_lowercase();
+            let message = if lower.contains("timeout")
+                || lower.contains("timed out")
+                || lower.contains("10060")
+            {
+                "GitHub не отвечает. Включите защиту zapret или VPN и повторите"
+            } else {
+                "Не удалось скачать TG WS Proxy"
+            };
+            AppError::new("NETWORK_ERROR", message)
+                .with_details(serde_json::json!({ "error": text, "url": url }))
         })?;
     let total = resp
         .header("Content-Length")
@@ -309,19 +358,32 @@ pub fn autostart_ready() -> bool {
 }
 
 pub async fn start() -> Result<TgwsStatus, AppError> {
-    let exe = exe_path()?;
+    let _guard = start_lock().lock().await;
+    let dir = install_dir()?;
+    let exe = dir.join(EXE_NAME);
     if !exe.is_file() {
         return Err(AppError::new(
             "TGWS_NOT_INSTALLED",
             "TG WS Proxy не установлен. Скачайте его на вкладке TG Proxy",
         ));
     }
-    let current = status().await;
-    if current.running {
-        return Ok(current);
+    let running: Vec<u32> = find_processes()
+        .into_iter()
+        .filter(|(_, path)| owns_process(path.as_deref(), &dir))
+        .map(|(pid, _)| pid)
+        .collect();
+    if running.len() > 1 {
+        tracing::warn!(
+            count = running.len(),
+            "найдено несколько TG WS Proxy, перезапускаю один"
+        );
+        let _ = kill_ours(&dir).await;
+        tokio::time::sleep(Duration::from_millis(400)).await;
+    } else if running.len() == 1 {
+        return Ok(status().await);
     }
     std::process::Command::new(&exe)
-        .current_dir(install_dir()?)
+        .current_dir(&dir)
         .creation_flags(0x0800_0000)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -352,22 +414,7 @@ pub async fn start() -> Result<TgwsStatus, AppError> {
 
 pub async fn stop() -> Result<TgwsStatus, AppError> {
     let dir = install_dir()?;
-    let procs = find_processes();
-    let mut killed = false;
-    for (pid, path) in procs {
-        if !owns_process(path.as_deref(), &dir) {
-            continue;
-        }
-        let out = tokio::process::Command::new("taskkill")
-            .args(["/PID", &pid.to_string(), "/T", "/F"])
-            .creation_flags(0x0800_0000)
-            .output()
-            .await;
-        if matches!(out, Ok(o) if o.status.success()) {
-            killed = true;
-        }
-    }
-    if killed {
+    if kill_ours(&dir).await > 0 {
         tokio::time::sleep(Duration::from_millis(400)).await;
     }
     Ok(status().await)

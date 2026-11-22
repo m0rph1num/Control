@@ -1,6 +1,7 @@
 pub mod backup;
 pub mod events;
 pub mod filters;
+pub mod github;
 pub mod operations;
 pub mod process_runner;
 pub mod process_scan;

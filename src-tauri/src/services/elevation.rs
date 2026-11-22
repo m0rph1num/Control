@@ -25,9 +25,14 @@ pub struct ElevationPlan {
 pub struct StepReport {
     pub action: String,
     pub ok: bool,
+    #[serde(default, alias = "exitCode")]
     pub exit_code: Option<i32>,
-
+    #[serde(default, alias = "outputTail")]
     pub output_tail: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub ignored: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

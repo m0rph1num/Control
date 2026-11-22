@@ -248,6 +248,19 @@ export function TgProxyScreen() {
                   : "Скачайте сборку, чтобы подключать Telegram без Zapret."}
           </p>
 
+          {status?.warning && (
+            <div className="mt-4 flex max-w-[34rem] items-start gap-2.5 rounded-[9px] border border-[color-mix(in_srgb,var(--warning)_28%,transparent)] bg-[color-mix(in_srgb,var(--warning)_8%,transparent)] px-3 py-2.5">
+              <Icon
+                name="danger-triangle-bold"
+                size={14}
+                className="mt-0.5 shrink-0 text-[color:var(--warning)]"
+              />
+              <span className="min-w-0 text-[12px] leading-relaxed text-foreground/90">
+                {status.warning}
+              </span>
+            </div>
+          )}
+
           <div className="mt-6 flex flex-wrap items-center gap-2">
             {status === null && (
               <div className="flex h-9 items-center gap-2 text-[12.5px] text-muted-foreground">

@@ -79,17 +79,10 @@ pub struct ReleaseInfo {
     pub notes: Option<String>,
 }
 
-fn select_asset(release: &serde_json::Value) -> Option<(String, String)> {
-    let assets = release["assets"].as_array()?;
+fn select_asset(assets: &[crate::services::github::Asset]) -> Option<(String, String)> {
     let mut best: Option<(u8, String, String)> = None;
     for asset in assets {
-        let Some(name) = asset["name"].as_str() else {
-            continue;
-        };
-        let Some(url) = asset["browser_download_url"].as_str() else {
-            continue;
-        };
-        let lower = name.to_lowercase();
+        let lower = asset.name.to_lowercase();
         let rank = if lower.ends_with(".zip") {
             0
         } else if lower.ends_with(".tar.gz") {
@@ -98,54 +91,38 @@ fn select_asset(release: &serde_json::Value) -> Option<(String, String)> {
             continue;
         };
         if best.as_ref().is_none_or(|(current, _, _)| rank < *current) {
-            best = Some((rank, name.to_string(), url.to_string()));
+            best = Some((rank, asset.name.clone(), asset.url.clone()));
         }
     }
     best.map(|(_, name, url)| (name, url))
 }
 
 pub fn fetch_releases_blocking(repo: &str) -> Result<Vec<ReleaseInfo>, AppError> {
-    let url = format!("https://api.github.com/repos/{repo}/releases?per_page=20");
-    let resp = ureq::get(&url)
-        .set("User-Agent", "Control-App")
-        .timeout(std::time::Duration::from_secs(15))
-        .call()
-        .map_err(|e| {
-            AppError::new(
-                "NETWORK_ERROR",
-                "Не удалось получить список версий с GitHub",
-            )
-            .with_details(serde_json::json!({ "error": e.to_string() }))
-        })?;
-    let json: serde_json::Value = resp.into_json().map_err(|e| {
-        AppError::new("NETWORK_ERROR", "Некорректный ответ GitHub")
-            .with_details(serde_json::json!({ "error": e.to_string() }))
-    })?;
-    let mut releases = Vec::new();
-    for rel in json.as_array().into_iter().flatten() {
-        let tag = rel["tag_name"].as_str().unwrap_or_default().to_string();
-        if tag.is_empty() {
+    let releases = crate::services::github::releases(repo, 20)?;
+    let mut result = Vec::new();
+    for release in releases {
+        let version = release.tag.trim_start_matches(['v', 'V']).to_string();
+        if version.is_empty() {
             continue;
         }
-        let version = tag.trim_start_matches('v').to_string();
-        let (asset_name, asset_url) = match select_asset(rel) {
+        let (asset_name, asset_url) = match select_asset(&release.assets) {
             Some((name, url)) => (Some(name), Some(url)),
             None => (None, None),
         };
-        releases.push(ReleaseInfo {
+        result.push(ReleaseInfo {
             version,
             asset_name,
             asset_url,
-            notes: rel["body"].as_str().map(str::to_string),
+            notes: release.notes,
         });
     }
-    if releases.is_empty() {
+    if result.is_empty() {
         return Err(AppError::new(
             "NO_RELEASES",
             "GitHub не вернул доступных версий",
         ));
     }
-    Ok(releases)
+    Ok(result)
 }
 
 pub fn temp_download_path(version: &str, asset_name: &str) -> Result<PathBuf, AppError> {
@@ -232,13 +209,27 @@ pub fn download_blocking(
             }
         }
     }
-    let resp = ureq::get(url)
-        .set("User-Agent", "Control-App")
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(std::time::Duration::from_secs(15))
         .timeout(std::time::Duration::from_secs(600))
+        .build();
+    let resp = agent
+        .get(url)
+        .set("User-Agent", "Control-App")
         .call()
         .map_err(|e| {
-            AppError::new("NETWORK_ERROR", "Ошибка скачивания")
-                .with_details(serde_json::json!({ "error": e.to_string() }))
+            let text = e.to_string();
+            let lower = text.to_lowercase();
+            if lower.contains("timeout") || lower.contains("timed out") || lower.contains("10060") {
+                AppError::new(
+                    "NETWORK_ERROR",
+                    "GitHub не отвечает. Включите защиту zapret или VPN и повторите",
+                )
+                .with_details(serde_json::json!({ "error": text }))
+            } else {
+                AppError::new("NETWORK_ERROR", "Ошибка скачивания")
+                    .with_details(serde_json::json!({ "error": text }))
+            }
         })?;
     let total = resp
         .header("Content-Length")
@@ -792,24 +783,36 @@ mod tests {
 
     #[test]
     fn selects_zip_asset_over_rar_and_tar_gz() {
-        let release = serde_json::json!({
-            "assets": [
-                { "name": "zapret.rar", "browser_download_url": "https://x/rar" },
-                { "name": "zapret.tar.gz", "browser_download_url": "https://x/tgz" },
-                { "name": "zapret.zip", "browser_download_url": "https://x/zip" }
-            ]
-        });
-        let (name, url) = select_asset(&release).unwrap();
+        let assets = vec![
+            crate::services::github::Asset {
+                name: "zapret.rar".into(),
+                url: "https://x/rar".into(),
+                size: None,
+            },
+            crate::services::github::Asset {
+                name: "zapret.tar.gz".into(),
+                url: "https://x/tgz".into(),
+                size: None,
+            },
+            crate::services::github::Asset {
+                name: "zapret.zip".into(),
+                url: "https://x/zip".into(),
+                size: None,
+            },
+        ];
+        let (name, url) = select_asset(&assets).unwrap();
         assert_eq!(name, "zapret.zip");
         assert_eq!(url, "https://x/zip");
     }
 
     #[test]
     fn release_without_supported_asset_has_no_url() {
-        let release = serde_json::json!({
-            "assets": [{ "name": "zapret.rar", "browser_download_url": "https://x/rar" }]
-        });
-        assert!(select_asset(&release).is_none());
+        let assets = vec![crate::services::github::Asset {
+            name: "zapret.rar".into(),
+            url: "https://x/rar".into(),
+            size: None,
+        }];
+        assert!(select_asset(&assets).is_none());
     }
 
     #[test]

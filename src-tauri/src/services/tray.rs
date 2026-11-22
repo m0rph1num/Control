@@ -115,10 +115,15 @@ async fn start_protection(state: &Arc<AppState>) -> Result<(), crate::errors::Ap
     let dir = crate::storage::settings::find_flowseal_dir(&settings).ok_or_else(|| {
         crate::errors::AppError::new("NO_ZAPRET_INSTALL", "Установка Zapret не найдена")
     })?;
-    let strategy = crate::storage::settings::list_strategies(&dir)
-        .into_iter()
-        .next()
-        .ok_or_else(|| crate::errors::AppError::new("NO_STRATEGIES", "Стратегии не найдены"))?;
+    let strategies = crate::storage::settings::list_strategies(&dir);
+    let saved =
+        crate::storage::settings::settings_str(&settings, "lastStrategy").unwrap_or_default();
+    let strategy = strategies
+        .iter()
+        .find(|s| s.value == saved)
+        .or_else(|| strategies.first())
+        .ok_or_else(|| crate::errors::AppError::new("NO_STRATEGIES", "Стратегии не найдены"))?
+        .clone();
     let game_mode = crate::storage::settings::game_filter_mode(&dir);
     let path = strategy.path;
     state.control.start(path, dir, game_mode).await.map(|_| ())

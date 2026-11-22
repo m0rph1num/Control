@@ -194,10 +194,11 @@ export function ProtectionScreen() {
   };
 
   const chooseStrategy = async (value: string) => {
+    const previous = selected;
     const wasActive = active;
     setSelected(value);
     remember(value);
-    if (!wasActive || value === selected) return;
+    if (!wasActive || value === previous) return;
     setApplying(value);
     const t = toast.loading("Применяю стратегию…", {
       description: "winws перезапустится, служба WinDivert останется",
@@ -206,6 +207,8 @@ export function ProtectionScreen() {
       await api.protectionApply(value);
       toast.success("Стратегия применена", { id: t });
     } catch (e) {
+      setSelected(previous);
+      remember(previous);
       toast.error("Не удалось применить стратегию", { id: t, description: errorText(e) });
     } finally {
       setApplying(null);

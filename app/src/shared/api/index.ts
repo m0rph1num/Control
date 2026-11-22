@@ -411,6 +411,7 @@ export interface TgwsStatus {
   configExists: boolean;
   exePath?: string;
   autostart: boolean;
+  warning?: string;
 }
 
 export interface TgwsInstallResult {

@@ -1,7 +1,6 @@
 use crate::errors::AppError;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 pub const REPO: &str = "m0rph1num/Control";
@@ -47,66 +46,36 @@ pub fn is_newer(candidate: &str, current: &str) -> bool {
     false
 }
 
-fn pick_asset(assets: &[serde_json::Value]) -> Option<&serde_json::Value> {
-    let is_exe = |asset: &serde_json::Value| {
-        asset["name"]
-            .as_str()
-            .is_some_and(|name| name.to_lowercase().ends_with(".exe"))
-    };
+fn pick_asset(
+    assets: &[crate::services::github::Asset],
+) -> Option<&crate::services::github::Asset> {
+    let is_exe =
+        |asset: &&crate::services::github::Asset| asset.name.to_lowercase().ends_with(".exe");
     let preferred = assets.iter().find(|asset| {
         if !is_exe(asset) {
             return false;
         }
-        let name = asset["name"].as_str().unwrap_or("").to_lowercase();
+        let name = asset.name.to_lowercase();
         name.contains("setup") || name.contains("install")
     });
-    preferred.or_else(|| assets.iter().find(|asset| is_exe(asset)))
+    preferred.or_else(|| assets.iter().find(is_exe))
 }
 
 pub fn check_blocking() -> Result<UpdateInfo, AppError> {
     let current_version = env!("CARGO_PKG_VERSION").to_string();
-    let url = format!("https://api.github.com/repos/{REPO}/releases/latest");
-    let response = ureq::get(&url)
-        .set("User-Agent", "Control-App")
-        .set("Accept", "application/vnd.github+json")
-        .timeout(Duration::from_secs(20))
-        .call()
-        .map_err(|e| {
-            let missing = matches!(&e, ureq::Error::Status(404, _));
-            AppError::new(
-                if missing {
-                    "NO_RELEASES"
-                } else {
-                    "NETWORK_ERROR"
-                },
-                if missing {
-                    "Релизы Control ещё не опубликованы"
-                } else {
-                    "Не удалось проверить обновления"
-                },
-            )
-            .with_details(serde_json::json!({ "error": e.to_string() }))
-        })?;
-    let json: serde_json::Value = response.into_json().map_err(|e| {
-        AppError::new("NETWORK_ERROR", "Некорректный ответ GitHub")
-            .with_details(serde_json::json!({ "error": e.to_string() }))
-    })?;
-    let tag = json["tag_name"]
-        .as_str()
-        .ok_or_else(|| AppError::new("NO_RELEASES", "GitHub не вернул информацию о релизе"))?;
-    let version = tag.trim_start_matches(['v', 'V']).to_string();
-    let assets = json["assets"].as_array().cloned().unwrap_or_default();
-    let asset = pick_asset(&assets);
-    let asset_name = asset.and_then(|a| a["name"].as_str().map(str::to_string));
-    let asset_url = asset.and_then(|a| a["browser_download_url"].as_str().map(str::to_string));
-    let size = asset.and_then(|a| a["size"].as_u64());
+    let release = crate::services::github::latest(REPO)?;
+    let version = release.tag.trim_start_matches(['v', 'V']).to_string();
+    let asset = pick_asset(&release.assets);
+    let asset_name = asset.map(|a| a.name.clone());
+    let asset_url = asset.map(|a| a.url.clone());
+    let size = asset.and_then(|a| a.size);
 
     Ok(UpdateInfo {
         available: is_newer(&version, &current_version),
         current_version,
         version,
-        notes: json["body"].as_str().map(str::to_string),
-        published_at: json["published_at"].as_str().map(str::to_string),
+        notes: release.notes,
+        published_at: release.published_at,
         asset_name,
         asset_url,
         size,
@@ -164,8 +133,13 @@ pub fn launch_installer(installer: &Path) -> Result<(), AppError> {
             .with_details(serde_json::json!({ "error": e.to_string() }))
     })?;
     let script = crate::storage::settings::app_data_dir()?.join("apply-update.cmd");
+    let elevate = if crate::services::elevation::is_elevated() {
+        ""
+    } else {
+        " -Verb RunAs"
+    };
     let content = format!(
-        "@echo off\r\nchcp 65001 >nul\r\ntimeout /t 2 /nobreak >nul\r\nset \"CTL_SETUP={}\"\r\npowershell -NoProfile -ExecutionPolicy Bypass -Command \"try {{ Start-Process -FilePath $env:CTL_SETUP -ArgumentList '/S' -Verb RunAs -Wait }} catch {{ exit 1 }}\"\r\nstart \"\" \"{}\"\r\ndel \"%~f0\"\r\n",
+        "@echo off\r\nchcp 65001 >nul\r\ntimeout /t 2 /nobreak >nul\r\nset \"CTL_SETUP={}\"\r\npowershell -NoProfile -ExecutionPolicy Bypass -Command \"try {{ Start-Process -FilePath $env:CTL_SETUP -ArgumentList '/S'{elevate} -Wait }} catch {{ exit 1 }}\"\r\nstart \"\" \"{}\"\r\ndel \"%~f0\"\r\n",
         installer.display(),
         exe.display()
     );
@@ -202,12 +176,17 @@ mod tests {
 
     #[test]
     fn asset_prefers_setup_executable() {
+        let asset = |name: &str, url: &str| crate::services::github::Asset {
+            name: name.into(),
+            url: url.into(),
+            size: None,
+        };
         let assets = vec![
-            serde_json::json!({ "name": "Control_2.0.0_x64.msi", "browser_download_url": "https://example.com/a.msi" }),
-            serde_json::json!({ "name": "Control_2.0.0_x64-setup.exe", "browser_download_url": "https://example.com/b.exe" }),
-            serde_json::json!({ "name": "Control_2.0.0_x64.nsis.zip", "browser_download_url": "https://example.com/c.zip" }),
+            asset("Control_2.0.0_x64.msi", "https://example.com/a.msi"),
+            asset("Control_2.0.0_x64-setup.exe", "https://example.com/b.exe"),
+            asset("Control_2.0.0_x64.nsis.zip", "https://example.com/c.zip"),
         ];
         let picked = pick_asset(&assets).expect("asset");
-        assert_eq!(picked["name"], "Control_2.0.0_x64-setup.exe");
+        assert_eq!(picked.name, "Control_2.0.0_x64-setup.exe");
     }
 }

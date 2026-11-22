@@ -1,6 +1,6 @@
 {
   "name": "control",
-  "version": "2.0.3",
+  "version": "2.0.4",
   "private": true,
   "description": "Control — графическая оболочка для Flowseal Zapret",
   "license": "MIT",
